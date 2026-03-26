@@ -2,7 +2,7 @@ import platform
 import shutil
 import subprocess
 import sys
-from pathlib import Path, PurePosixPath, PureWindowsPath
+from pathlib import Path
 
 
 def _es_wsl() -> bool:
@@ -16,17 +16,18 @@ def _es_wsl() -> bool:
         return False
 
 
-def _es_soffice_windows(ruta_soffice: str) -> bool:
-    """Determina si el ejecutable de soffice es un .exe de Windows."""
-    return ruta_soffice.lower().endswith(".exe")
+
+def _es_exe_windows(ruta: str) -> bool:
+    """Determina si un ejecutable es un .exe de Windows."""
+    return ruta.lower().endswith(".exe")
 
 
-def _ruta_para_soffice(ruta: Path, soffice_es_windows: bool) -> str:
-    """Convierte una ruta al formato que necesita soffice.
-    Si estamos en WSL usando soffice de Windows, convierte a ruta Windows.
+def _ruta_para_exe(ruta: Path, exe_es_windows: bool) -> str:
+    """Convierte una ruta al formato que necesita el ejecutable.
+    Si estamos en WSL usando un .exe de Windows, convierte a ruta Windows.
     En cualquier otro caso, devuelve la ruta tal cual.
     """
-    if not (_es_wsl() and soffice_es_windows):
+    if not (_es_wsl() and exe_es_windows):
         return str(ruta)
     resultado = subprocess.run(
         ["wslpath", "-w", str(ruta)],
@@ -35,6 +36,29 @@ def _ruta_para_soffice(ruta: Path, soffice_es_windows: bool) -> str:
     if resultado.returncode == 0:
         return resultado.stdout.strip()
     return str(ruta)
+
+
+def encontrar_calibre() -> str | None:
+    """Busca el ejecutable ebook-convert de Calibre en el sistema."""
+    ruta = shutil.which("ebook-convert")
+    if ruta:
+        return ruta
+    if platform.system() == "Windows":
+        rutas_fallback = [
+            r"C:\Program Files\Calibre2\ebook-convert.exe",
+            r"C:\Program Files (x86)\Calibre2\ebook-convert.exe",
+        ]
+    elif _es_wsl():
+        rutas_fallback = [
+            "/mnt/c/Program Files/Calibre2/ebook-convert.exe",
+            "/mnt/c/Program Files (x86)/Calibre2/ebook-convert.exe",
+        ]
+    else:
+        rutas_fallback = []
+    for ruta in rutas_fallback:
+        if Path(ruta).exists():
+            return ruta
+    return None
 
 
 def encontrar_libreoffice() -> str | None:
@@ -83,9 +107,9 @@ def convertir_a_docx(ruta: Path, dir_tmp: Path) -> Path:
     shutil.copy2(ruta, ruta_limpia)
 
     # Si soffice es de Windows (corriendo desde WSL), convertir paths
-    soffice_win = _es_soffice_windows(soffice)
-    arg_outdir = _ruta_para_soffice(dir_tmp, soffice_win)
-    arg_entrada = _ruta_para_soffice(ruta_limpia, soffice_win)
+    soffice_win = _es_exe_windows(soffice)
+    arg_outdir = _ruta_para_exe(dir_tmp, soffice_win)
+    arg_entrada = _ruta_para_exe(ruta_limpia, soffice_win)
 
     print(f"🔄 Convirtiendo {ruta.name} a DOCX con LibreOffice...")
     resultado = subprocess.run(
@@ -109,6 +133,51 @@ def convertir_a_docx(ruta: Path, dir_tmp: Path) -> Path:
             print(f"❌ No se generó el archivo DOCX esperado.")
             print(f"   Salida de LibreOffice: {resultado.stdout}")
             sys.exit(1)
+
+    print(f"   Convertido a DOCX exitosamente.")
+    return docx_salida
+
+
+def convertir_con_calibre(ruta: Path, dir_tmp: Path) -> Path:
+    """Convierte un archivo (EPUB, PDF, etc.) a DOCX usando Calibre (ebook-convert).
+    Devuelve la ruta al DOCX generado.
+    """
+    ebook_convert = encontrar_calibre()
+    if not ebook_convert:
+        print("❌ Calibre (ebook-convert) no encontrado.")
+        print("   Instalalo desde: https://calibre-ebook.com/download")
+        sys.exit(1)
+
+    dir_tmp.mkdir(parents=True, exist_ok=True)
+
+    # Copiar a nombre limpio para evitar problemas con caracteres especiales
+    nombre_limpio = "entrada" + ruta.suffix
+    ruta_limpia = dir_tmp / nombre_limpio
+    shutil.copy2(ruta, ruta_limpia)
+
+    docx_salida = dir_tmp / "entrada.docx"
+
+    # Si ebook-convert es de Windows (corriendo desde WSL), convertir paths
+    es_win = _es_exe_windows(ebook_convert)
+    arg_entrada = _ruta_para_exe(ruta_limpia, es_win)
+    arg_salida = _ruta_para_exe(docx_salida, es_win)
+
+    print(f"🔄 Convirtiendo {ruta.name} a DOCX con Calibre...")
+    resultado = subprocess.run(
+        [ebook_convert, arg_entrada, arg_salida],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    if resultado.returncode != 0:
+        print(f"❌ Error al convertir: {resultado.stderr}")
+        sys.exit(1)
+
+    if not docx_salida.exists():
+        print(f"❌ No se generó el archivo DOCX esperado.")
+        print(f"   Salida de Calibre: {resultado.stdout}")
+        sys.exit(1)
 
     print(f"   Convertido a DOCX exitosamente.")
     return docx_salida

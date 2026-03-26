@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Traduce documentos de inglés a español usando Ollama + TranslateGemma.
-Soporta DOCX (preservando formato), PDF, RTF, DOC y ODT (vía LibreOffice).
+Soporta DOCX (preservando formato), PDF, RTF, DOC, ODT (vía LibreOffice) y EPUB (vía Calibre).
 
 Uso:
     python traductor-eng-sp.py libro.docx
@@ -29,11 +29,11 @@ except ImportError:
 
 from .config import MODELO_DEFAULT, CHUNK_PALABRAS, PAUSA_ENTRE_CHUNKS
 from .chunker import dividir_en_chunks
-from .converter import convertir_a_docx
+from .converter import convertir_a_docx, convertir_con_calibre
 from .docx_handler import extraer_unidades, aplicar_traducciones, guardar_docx
 from .translator import traducir_chunks
 
-FORMATOS_SOPORTADOS = {".docx", ".pdf", ".rtf", ".doc", ".odt"}
+FORMATOS_SOPORTADOS = {".docx", ".pdf", ".rtf", ".doc", ".odt", ".epub"}
 
 
 def verificar_modelo(modelo: str):
@@ -56,7 +56,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Traduce documentos de inglés a español usando Ollama + TranslateGemma"
     )
-    parser.add_argument("entrada", help="Archivo de entrada (DOCX, PDF, RTF, DOC, ODT)")
+    parser.add_argument("entrada", help="Archivo de entrada (DOCX, PDF, RTF, DOC, ODT, EPUB)")
     parser.add_argument(
         "--modelo", default=MODELO_DEFAULT,
         help=f"Modelo Ollama a usar (default: {MODELO_DEFAULT})"
@@ -92,6 +92,9 @@ def main():
     dir_tmp = None
     if ext == ".docx":
         ruta_docx = ruta_entrada
+    elif ext in (".epub", ".pdf"):
+        dir_tmp = Path(tempfile.mkdtemp(prefix="traductor_"))
+        ruta_docx = convertir_con_calibre(ruta_entrada, dir_tmp)
     else:
         dir_tmp = Path(tempfile.mkdtemp(prefix="traductor_"))
         ruta_docx = convertir_a_docx(ruta_entrada, dir_tmp)
