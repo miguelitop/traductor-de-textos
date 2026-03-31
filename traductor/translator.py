@@ -8,11 +8,20 @@ from .config import REINTENTOS_MAX
 
 def traducir_chunk(texto: str, modelo: str) -> str:
     """Envía un chunk a Ollama y devuelve la traducción."""
+    instruccion_links = ""
+    if "\u00ab" in texto and "\u00bb" in texto:
+        instruccion_links = (
+            "IMPORTANT: The text contains hyperlink markers in the format \u00abN:text\u00bb. "
+            "You MUST preserve these markers exactly, translating only the text between "
+            "the colon and the closing \u00bb. For example, \u00ab1:click here\u00bb should become "
+            "\u00ab1:haga clic aqu\u00ed\u00bb. Never remove, reorder, or alter the marker numbers. "
+        )
     prompt = (
         "You are a professional English (en) to Spanish (es) translator. "
         "Your goal is to accurately convey the meaning and nuances of the original "
         "English text while adhering to Spanish grammar, vocabulary, and cultural sensitivities. "
         "Produce only the Spanish translation, without any additional explanations or commentary. "
+        f"{instruccion_links}"
         "Please translate the following English text into Spanish:\n\n\n"
         f"{texto}"
     )
