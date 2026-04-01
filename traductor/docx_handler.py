@@ -15,6 +15,15 @@ class HyperlinkInfo:
     """Info de un hipervínculo dentro de un párrafo."""
     url: str
     r_id: str
+    anchor: str = ""
+    rPr: object = None
+
+
+@dataclass
+class NotaInfo:
+    """Info de una referencia a nota al pie o final."""
+    tipo: str  # "footnote" o "endnote"
+    nota_id: str
     rPr: object = None
 
 
@@ -25,6 +34,7 @@ class UnidadTraducible:
     parrafo: Paragraph
     traduccion: str = ""
     hyperlinks: dict = field(default_factory=dict)
+    notas: dict = field(default_factory=dict)
     base_rPr: object = None
 
 
@@ -38,21 +48,40 @@ def _parrafo_tiene_imagen(parrafo: Paragraph) -> bool:
     return False
 
 
-def _extraer_texto_con_links(parrafo: Paragraph) -> tuple[str, dict, object]:
-    """Extrae texto del párrafo con marcadores «N:texto» para hipervínculos.
+def _extraer_texto_con_links(parrafo: Paragraph) -> tuple[str, dict, dict, object]:
+    """Extrae texto del párrafo con marcadores para hipervínculos y notas.
 
-    Retorna (texto_con_marcadores, {indice: HyperlinkInfo}, rPr_base).
+    Marcadores: «N:texto» para links, «FN:id» / «EN:id» para notas.
+    Retorna (texto_con_marcadores, {indice: HyperlinkInfo}, {indice: NotaInfo}, rPr_base).
     """
     elem = parrafo._element
     link_map = {}
+    nota_map = {}
     link_counter = 0
+    nota_counter = 0
     text_parts = []
     base_rPr = None
 
     for child in elem:
         if child.tag == qn("w:r"):
-            for t_elem in child.findall(qn("w:t")):
-                text_parts.append(t_elem.text or "")
+            # Verificar si el run contiene una referencia a nota
+            fn_ref = child.find(qn("w:footnoteReference"))
+            en_ref = child.find(qn("w:endnoteReference"))
+            if fn_ref is not None or en_ref is not None:
+                ref_elem = fn_ref if fn_ref is not None else en_ref
+                tipo = "footnote" if fn_ref is not None else "endnote"
+                nota_id = ref_elem.get(qn("w:id"), "")
+                nota_counter += 1
+                nota_rPr = child.find(qn("w:rPr"))
+                nota_map[nota_counter] = NotaInfo(
+                    tipo=tipo, nota_id=nota_id,
+                    rPr=deepcopy(nota_rPr) if nota_rPr is not None else None,
+                )
+                prefijo = "FN" if tipo == "footnote" else "EN"
+                text_parts.append(f"\u00ab{prefijo}:{nota_counter}\u00bb")
+            else:
+                for t_elem in child.findall(qn("w:t")):
+                    text_parts.append(t_elem.text or "")
             if base_rPr is None:
                 rPr = child.find(qn("w:rPr"))
                 if rPr is not None:
@@ -61,6 +90,7 @@ def _extraer_texto_con_links(parrafo: Paragraph) -> tuple[str, dict, object]:
         elif child.tag == qn("w:hyperlink"):
             link_counter += 1
             r_id = child.get(qn("r:id"), "")
+            anchor = child.get(qn("w:anchor"), "")
             url = ""
             if r_id:
                 try:
@@ -79,11 +109,11 @@ def _extraer_texto_con_links(parrafo: Paragraph) -> tuple[str, dict, object]:
                         link_rPr = deepcopy(found)
 
             link_map[link_counter] = HyperlinkInfo(
-                url=url, r_id=r_id, rPr=link_rPr,
+                url=url, r_id=r_id, anchor=anchor, rPr=link_rPr,
             )
             text_parts.append(f"\u00ab{link_counter}:{link_text}\u00bb")
 
-    return "".join(text_parts).strip(), link_map, base_rPr
+    return "".join(text_parts).strip(), link_map, nota_map, base_rPr
 
 
 def _extraer_de_parrafos(parrafos: list[Paragraph]) -> list[UnidadTraducible]:
@@ -92,12 +122,12 @@ def _extraer_de_parrafos(parrafos: list[Paragraph]) -> list[UnidadTraducible]:
     for parrafo in parrafos:
         if _parrafo_tiene_imagen(parrafo):
             continue
-        texto, links, base_rPr = _extraer_texto_con_links(parrafo)
+        texto, links, notas, base_rPr = _extraer_texto_con_links(parrafo)
         if not texto:
             continue
         unidades.append(UnidadTraducible(
             texto=texto, parrafo=parrafo,
-            hyperlinks=links, base_rPr=base_rPr,
+            hyperlinks=links, notas=notas, base_rPr=base_rPr,
         ))
     return unidades
 
@@ -123,6 +153,9 @@ def extraer_unidades(ruta_docx: Path) -> tuple[Document, list[UnidadTraducible]]
 
 
 _LINK_PATTERN = re.compile(r"\u00ab(\d+):(.*?)\u00bb")
+_NOTA_PATTERN = re.compile(r"\u00ab(FN|EN):(\d+)\u00bb")
+# Patrón que encuentra cualquier marcador (link o nota)
+_CUALQUIER_MARCADOR = re.compile(r"\u00ab(?:\d+:.*?|(?:FN|EN):\d+)\u00bb")
 
 
 def _crear_run_element(texto: str, rPr: object = None) -> OxmlElement:
@@ -134,6 +167,18 @@ def _crear_run_element(texto: str, rPr: object = None) -> OxmlElement:
     t_el.text = texto
     t_el.set(qn("xml:space"), "preserve")
     run_el.append(t_el)
+    return run_el
+
+
+def _crear_run_nota(info: NotaInfo) -> OxmlElement:
+    """Crea un elemento w:r con referencia a nota al pie o final."""
+    run_el = OxmlElement("w:r")
+    if info.rPr is not None:
+        run_el.append(deepcopy(info.rPr))
+    tag = "w:footnoteReference" if info.tipo == "footnote" else "w:endnoteReference"
+    ref_el = OxmlElement(tag)
+    ref_el.set(qn("w:id"), info.nota_id)
+    run_el.append(ref_el)
     return run_el
 
 
@@ -160,8 +205,9 @@ def _aplicar_estilo_link(run_el: OxmlElement):
 
 
 def _reconstruir_parrafo(parrafo: Paragraph, texto: str,
-                         link_map: dict, base_rPr: object):
-    """Reconstruye el XML del párrafo con hipervínculos preservados."""
+                         link_map: dict, nota_map: dict,
+                         base_rPr: object):
+    """Reconstruye el XML del párrafo con hipervínculos y notas preservados."""
     elem = parrafo._element
 
     # Limpiar todos los hijos excepto w:pPr (propiedades del párrafo)
@@ -169,50 +215,67 @@ def _reconstruir_parrafo(parrafo: Paragraph, texto: str,
         if child.tag != qn("w:pPr"):
             elem.remove(child)
 
-    # Partir el texto en segmentos: [texto, num, link_texto, texto, ...]
-    segments = _LINK_PATTERN.split(texto)
-
-    for j in range(0, len(segments), 3):
-        # Texto normal
-        plain = segments[j]
+    # Procesar texto: partir por marcadores y reconstruir secuencialmente
+    last_end = 0
+    for match in _CUALQUIER_MARCADOR.finditer(texto):
+        # Texto plano antes del marcador
+        plain = texto[last_end:match.start()]
         if plain:
             elem.append(_crear_run_element(plain, base_rPr))
+        last_end = match.end()
 
-        # Hipervínculo (si hay)
-        if j + 2 < len(segments):
-            link_idx = int(segments[j + 1])
-            link_text = segments[j + 2]
+        marcador = match.group()
 
+        # ¿Es un link?
+        link_match = _LINK_PATTERN.match(marcador)
+        if link_match:
+            link_idx = int(link_match.group(1))
+            link_text = link_match.group(2)
             if link_idx in link_map:
                 info = link_map[link_idx]
                 hl_el = OxmlElement("w:hyperlink")
                 if info.r_id:
                     hl_el.set(qn("r:id"), info.r_id)
+                if info.anchor:
+                    hl_el.set(qn("w:anchor"), info.anchor)
                 link_rPr = info.rPr if info.rPr is not None else base_rPr
                 link_run = _crear_run_element(link_text, link_rPr)
                 _aplicar_estilo_link(link_run)
                 hl_el.append(link_run)
                 elem.append(hl_el)
             else:
-                # Fallback: insertar como texto normal
                 elem.append(_crear_run_element(link_text, base_rPr))
+            continue
+
+        # ¿Es una nota?
+        nota_match = _NOTA_PATTERN.match(marcador)
+        if nota_match:
+            nota_idx = int(nota_match.group(2))
+            if nota_idx in nota_map:
+                elem.append(_crear_run_nota(nota_map[nota_idx]))
+
+    # Texto plano restante después del último marcador
+    if last_end < len(texto):
+        remaining = texto[last_end:]
+        if remaining:
+            elem.append(_crear_run_element(remaining, base_rPr))
 
 
 def aplicar_traducciones(unidades: list[UnidadTraducible]):
-    """Reescribe los párrafos con las traducciones, preservando hipervínculos."""
+    """Reescribe los párrafos con las traducciones, preservando hipervínculos y notas."""
     for unidad in unidades:
         if not unidad.traduccion:
             continue
 
         parrafo = unidad.parrafo
 
-        if unidad.hyperlinks:
+        if unidad.hyperlinks or unidad.notas:
             _reconstruir_parrafo(
                 parrafo, unidad.traduccion,
-                unidad.hyperlinks, unidad.base_rPr,
+                unidad.hyperlinks, unidad.notas, unidad.base_rPr,
             )
         else:
-            # Sin hipervínculos: lógica original (más segura, preserva formato)
+            # Sin hipervínculos ni notas: lógica original (más segura, preserva formato)
             runs = parrafo.runs
             if not runs:
                 continue
