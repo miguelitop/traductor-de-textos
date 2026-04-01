@@ -27,10 +27,12 @@ except ImportError:
     print("❌ Falta instalar: pip install tqdm")
     sys.exit(1)
 
-from .config import MODELO_DEFAULT, CHUNK_PALABRAS, PAUSA_ENTRE_CHUNKS
+from .config import (MODELO_DEFAULT, CHUNK_PALABRAS, PAUSA_ENTRE_CHUNKS,
+                     FUENTE_DEFAULT, TAMANO_FUENTE_DEFAULT)
 from .chunker import dividir_en_chunks
 from .converter import convertir_a_docx, convertir_con_calibre
-from .docx_handler import extraer_unidades, aplicar_traducciones, guardar_docx
+from .docx_handler import (extraer_unidades, aplicar_traducciones, aplicar_fuente,
+                           guardar_docx)
 from .translator import traducir_chunks
 
 FORMATOS_SOPORTADOS = {".docx", ".pdf", ".rtf", ".doc", ".odt", ".epub"}
@@ -68,6 +70,14 @@ def main():
     parser.add_argument(
         "--salida", default=None,
         help="Archivo DOCX de salida (default: <entrada>_es.docx)"
+    )
+    parser.add_argument(
+        "--fuente", default=None,
+        help=f"Fuente para el documento de salida (default: conservar original, ej: '{FUENTE_DEFAULT}')"
+    )
+    parser.add_argument(
+        "--tamano-fuente", type=int, default=None,
+        help=f"Tamaño de fuente en puntos (default: conservar original, ej: {TAMANO_FUENTE_DEFAULT})"
     )
     args = parser.parse_args()
 
@@ -135,6 +145,10 @@ def main():
 
         # ── Aplicar traducciones al documento y guardar ──
         aplicar_traducciones(unidades)
+        if args.fuente or args.tamano_fuente:
+            fuente = args.fuente or FUENTE_DEFAULT
+            tamano = args.tamano_fuente or TAMANO_FUENTE_DEFAULT
+            aplicar_fuente(doc, fuente, tamano)
         guardar_docx(doc, ruta_salida)
 
         # ── Resumen final ──

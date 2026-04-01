@@ -6,6 +6,7 @@ from pathlib import Path
 from docx import Document
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
+from docx.shared import Pt, RGBColor
 from docx.text.paragraph import Paragraph
 
 
@@ -136,6 +137,28 @@ def _crear_run_element(texto: str, rPr: object = None) -> OxmlElement:
     return run_el
 
 
+def _aplicar_estilo_link(run_el: OxmlElement):
+    """Aplica color azul y subrayado a un run de hipervínculo."""
+    rPr = run_el.find(qn("w:rPr"))
+    if rPr is None:
+        rPr = OxmlElement("w:rPr")
+        run_el.insert(0, rPr)
+
+    # Color azul estándar de hyperlinks
+    color_el = rPr.find(qn("w:color"))
+    if color_el is None:
+        color_el = OxmlElement("w:color")
+        rPr.append(color_el)
+    color_el.set(qn("w:val"), "0000FF")
+
+    # Subrayado simple
+    u_el = rPr.find(qn("w:u"))
+    if u_el is None:
+        u_el = OxmlElement("w:u")
+        rPr.append(u_el)
+    u_el.set(qn("w:val"), "single")
+
+
 def _reconstruir_parrafo(parrafo: Paragraph, texto: str,
                          link_map: dict, base_rPr: object):
     """Reconstruye el XML del párrafo con hipervínculos preservados."""
@@ -166,7 +189,9 @@ def _reconstruir_parrafo(parrafo: Paragraph, texto: str,
                 if info.r_id:
                     hl_el.set(qn("r:id"), info.r_id)
                 link_rPr = info.rPr if info.rPr is not None else base_rPr
-                hl_el.append(_crear_run_element(link_text, link_rPr))
+                link_run = _crear_run_element(link_text, link_rPr)
+                _aplicar_estilo_link(link_run)
+                hl_el.append(link_run)
                 elem.append(hl_el)
             else:
                 # Fallback: insertar como texto normal
@@ -194,6 +219,24 @@ def aplicar_traducciones(unidades: list[UnidadTraducible]):
             runs[0].text = unidad.traduccion
             for run in runs[1:]:
                 run.text = ""
+
+
+def _aplicar_fuente_parrafos(parrafos: list[Paragraph], nombre_fuente: str,
+                             tamano: int):
+    """Aplica fuente y tamaño a todos los runs de una lista de párrafos."""
+    for parrafo in parrafos:
+        for run in parrafo.runs:
+            run.font.name = nombre_fuente
+            run.font.size = Pt(tamano)
+
+
+def aplicar_fuente(doc: Document, nombre_fuente: str, tamano: int):
+    """Aplica fuente y tamaño a todo el documento (cuerpo + tablas)."""
+    _aplicar_fuente_parrafos(doc.paragraphs, nombre_fuente, tamano)
+    for tabla in doc.tables:
+        for fila in tabla.rows:
+            for celda in fila.cells:
+                _aplicar_fuente_parrafos(celda.paragraphs, nombre_fuente, tamano)
 
 
 def guardar_docx(doc: Document, ruta_salida: Path):
