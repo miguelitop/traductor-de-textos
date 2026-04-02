@@ -53,6 +53,10 @@ def encontrar_calibre() -> str | None:
             "/mnt/c/Program Files/Calibre2/ebook-convert.exe",
             "/mnt/c/Program Files (x86)/Calibre2/ebook-convert.exe",
         ]
+    elif platform.system() == "Darwin":
+        rutas_fallback = [
+            "/Applications/calibre.app/Contents/MacOS/ebook-convert",
+        ]
     else:
         rutas_fallback = []
     for ruta in rutas_fallback:
@@ -76,6 +80,10 @@ def encontrar_libreoffice() -> str | None:
         rutas_fallback = [
             "/mnt/c/Program Files/LibreOffice/program/soffice.exe",
             "/mnt/c/Program Files (x86)/LibreOffice/program/soffice.exe",
+        ]
+    elif platform.system() == "Darwin":
+        rutas_fallback = [
+            "/Applications/LibreOffice.app/Contents/MacOS/soffice",
         ]
     else:
         rutas_fallback = []
