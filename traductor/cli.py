@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """
 Traduce documentos de inglés a español usando Ollama + TranslateGemma.
-Soporta DOCX (preservando formato), PDF, RTF, DOC, ODT (vía LibreOffice) y EPUB (vía Calibre).
+Soporta DOCX (preservando formato), PDF, RTF, DOC, ODT (vía LibreOffice),
+EPUB (nativo, preservando imágenes y estilos) y HTML.
 
 Uso:
     python traductor-eng-sp.py libro.docx
+    python traductor-eng-sp.py libro.epub
     python traductor-eng-sp.py libro.pdf --modelo translategemma:12b
     python traductor-eng-sp.py libro.rtf --chunk-palabras 400 --salida mi_traduccion.docx
 """
@@ -33,9 +35,11 @@ from .chunker import dividir_en_chunks
 from .converter import convertir_a_docx, convertir_con_calibre
 from .docx_handler import (extraer_unidades, aplicar_traducciones, aplicar_fuente,
                            guardar_docx)
+from .epub_handler import abrir_epub, extraer_capitulos, aplicar_traducciones_epub, guardar_epub
+from .html_handler import parsear_html, extraer_nodos_texto, aplicar_traducciones_html, serializar_html
 from .translator import traducir_chunks
 
-FORMATOS_SOPORTADOS = {".docx", ".pdf", ".rtf", ".doc", ".odt", ".epub"}
+FORMATOS_SOPORTADOS = {".docx", ".pdf", ".rtf", ".doc", ".odt", ".epub", ".html", ".htm"}
 
 
 def verificar_modelo(modelo: str):
@@ -92,17 +96,92 @@ def main():
         print(f"   Formatos válidos: {', '.join(sorted(FORMATOS_SOPORTADOS))}")
         sys.exit(1)
 
+    # Extensión de salida según formato
+    if ext in (".epub",):
+        ext_salida = "_es.epub"
+    elif ext in (".html", ".htm"):
+        ext_salida = "_es.html"
+    else:
+        ext_salida = "_es.docx"
+
     ruta_salida = Path(args.salida) if args.salida else ruta_entrada.with_name(
-        ruta_entrada.stem + "_es.docx"
+        ruta_entrada.stem + ext_salida
     )
 
     verificar_modelo(args.modelo)
 
-    # ── Obtener DOCX de trabajo ──
+    print(f"📖 Leyendo: {ruta_entrada.name}")
+
+    # ── Rama EPUB ──
+    if ext == ".epub":
+        book = abrir_epub(ruta_entrada)
+        capitulos = extraer_capitulos(book)
+
+        if not capitulos:
+            print("❌ No se encontraron capítulos traducibles en el EPUB.")
+            sys.exit(1)
+
+        total_nodos = sum(len(c.nodos) for c in capitulos)
+        total_palabras = sum(
+            len(nodo.strip().split()) for c in capitulos for nodo in c.nodos
+        )
+        print(f"   {len(capitulos)} capítulos, {total_nodos} bloques de texto, {total_palabras:,} palabras")
+
+        errores_total = []
+        nodos_traducidos = 0
+
+        for i, capitulo in enumerate(capitulos, 1):
+            textos = [str(nodo).strip() for nodo in capitulo.nodos]
+            print(f"\n   Capítulo {i}/{len(capitulos)}: {len(textos)} bloques de texto")
+
+            # Traducir cada nodo como chunk independiente → correspondencia 1:1 garantizada
+            traducciones_nodos, errores = traducir_chunks(textos, args.modelo, PAUSA_ENTRE_CHUNKS)
+            errores_total.extend(errores)
+
+            aplicar_traducciones_epub(capitulo, traducciones_nodos)
+            nodos_traducidos += len(capitulo.nodos)
+
+        guardar_epub(book, ruta_salida)
+
+        print(f"\n✅ Traducción completada.")
+        print(f"   Guardado en: {ruta_salida}")
+        print(f"   Capítulos: {len(capitulos)}, bloques traducidos: {nodos_traducidos}")
+        if errores_total:
+            print(f"   ⚠️  Chunks con error: {errores_total}")
+        return
+
+    # ── Rama HTML ──
+    if ext in (".html", ".htm"):
+        contenido = ruta_entrada.read_bytes()
+        soup = parsear_html(contenido)
+        nodos = extraer_nodos_texto(soup)
+
+        if not nodos:
+            print("❌ No se encontró texto traducible en el HTML.")
+            sys.exit(1)
+
+        textos = [str(n).strip() for n in nodos]
+        total_palabras = sum(len(t.split()) for t in textos)
+
+        print(f"   {total_palabras:,} palabras, {len(textos)} bloques de texto")
+
+        # Traducir cada nodo como chunk independiente → correspondencia 1:1 garantizada
+        traducciones_nodos, errores = traducir_chunks(textos, args.modelo, PAUSA_ENTRE_CHUNKS)
+
+        aplicar_traducciones_html(nodos, traducciones_nodos)
+        ruta_salida.write_text(serializar_html(soup), encoding="utf-8")
+
+        print(f"\n✅ Traducción completada.")
+        print(f"   Guardado en: {ruta_salida}")
+        if errores:
+            print(f"   ⚠️  Chunks con error: {errores}")
+        return
+
+    # ── Rama DOCX / PDF / otros (vía conversión) ──
     dir_tmp = None
     if ext == ".docx":
         ruta_docx = ruta_entrada
-    elif ext in (".epub", ".pdf"):
+    elif ext == ".pdf":
         dir_tmp = Path(tempfile.mkdtemp(prefix="traductor_"))
         ruta_docx = convertir_con_calibre(ruta_entrada, dir_tmp)
     else:
@@ -110,15 +189,12 @@ def main():
         ruta_docx = convertir_a_docx(ruta_entrada, dir_tmp)
 
     try:
-        # ── Extraer unidades traducibles ──
-        print(f"📖 Leyendo: {ruta_entrada.name}")
         doc, unidades = extraer_unidades(ruta_docx)
 
         if not unidades:
             print("❌ No se encontraron unidades de texto traducibles.")
             sys.exit(1)
 
-        # ── Agrupar en chunks ──
         textos = [u.texto for u in unidades]
         texto_completo = "\n".join(textos)
         total_palabras = len(texto_completo.split())
@@ -129,21 +205,17 @@ def main():
         mins = tiempo_estimado // 60
         print(f"   Tiempo estimado: ~{mins} minutos\n")
 
-        # ── Traducir chunks ──
         traducciones, errores = traducir_chunks(chunks, args.modelo, PAUSA_ENTRE_CHUNKS)
 
-        # ── Redistribuir traducciones en las unidades originales ──
         texto_traducido = "\n".join(traducciones)
         parrafos_traducidos = [p.strip() for p in texto_traducido.split("\n") if p.strip()]
 
-        # Mapear traducciones a unidades (1 a 1 por párrafo)
         for i, unidad in enumerate(unidades):
             if i < len(parrafos_traducidos):
                 unidad.traduccion = parrafos_traducidos[i]
             else:
-                unidad.traduccion = unidad.texto  # fallback: dejar original
+                unidad.traduccion = unidad.texto
 
-        # ── Aplicar traducciones al documento y guardar ──
         aplicar_traducciones(unidades)
         if args.fuente or args.tamano_fuente:
             fuente = args.fuente or FUENTE_DEFAULT
@@ -151,7 +223,6 @@ def main():
             aplicar_fuente(doc, fuente, tamano)
         guardar_docx(doc, ruta_salida)
 
-        # ── Resumen final ──
         print(f"\n✅ Traducción completada.")
         print(f"   Guardado en: {ruta_salida}")
         print(f"   Unidades traducidas: {len(unidades)}")
@@ -160,6 +231,5 @@ def main():
             print(f"   ⚠️  Chunks con error (revisar manualmente): {errores}")
 
     finally:
-        # Limpiar archivos temporales
         if dir_tmp and dir_tmp.exists():
             shutil.rmtree(dir_tmp, ignore_errors=True)
