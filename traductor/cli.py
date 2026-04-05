@@ -35,7 +35,8 @@ from .chunker import dividir_en_chunks
 from .converter import convertir_a_docx, convertir_con_calibre
 from .docx_handler import (extraer_unidades, aplicar_traducciones, aplicar_fuente,
                            guardar_docx)
-from .epub_handler import abrir_epub, extraer_capitulos, aplicar_traducciones_epub, guardar_epub
+from .epub_handler import (abrir_epub, extraer_capitulos, aplicar_traducciones_epub, guardar_epub,
+                           exportar_revision, importar_revision)
 from .html_handler import parsear_html, extraer_nodos_texto, aplicar_traducciones_html, serializar_html
 from .translator import traducir_chunks
 
@@ -83,6 +84,14 @@ def main():
         "--tamano-fuente", type=int, default=None,
         help=f"Tamaño de fuente en puntos (default: conservar original, ej: {TAMANO_FUENTE_DEFAULT})"
     )
+    parser.add_argument(
+        "--revisar", action="store_true",
+        help="EPUB: exportar capítulos traducidos como HTMLs navegables para revisión manual"
+    )
+    parser.add_argument(
+        "--desde-revision", default=None, metavar="CARPETA",
+        help="EPUB: generar EPUB final usando HTMLs corregidos de una carpeta de revisión"
+    )
     args = parser.parse_args()
 
     ruta_entrada = Path(args.entrada)
@@ -95,6 +104,31 @@ def main():
         print(f"❌ Formato no soportado: {ext}")
         print(f"   Formatos válidos: {', '.join(sorted(FORMATOS_SOPORTADOS))}")
         sys.exit(1)
+
+    if (args.revisar or args.desde_revision) and ext != ".epub":
+        print("❌ --revisar y --desde-revision solo funcionan con archivos EPUB.")
+        sys.exit(1)
+
+    # ── Rama --desde-revision (no necesita traducir) ──
+    if args.desde_revision:
+        dir_revision = Path(args.desde_revision)
+        if not dir_revision.is_dir():
+            print(f"❌ Carpeta no encontrada: {dir_revision}")
+            sys.exit(1)
+
+        ruta_salida = Path(args.salida) if args.salida else ruta_entrada.with_name(
+            ruta_entrada.stem + "_es.epub"
+        )
+
+        print(f"📖 Leyendo EPUB original: {ruta_entrada.name}")
+
+        print(f"📝 Aplicando revisión desde: {dir_revision}")
+        contenidos = importar_revision(ruta_entrada, dir_revision)
+
+        guardar_epub(ruta_entrada, ruta_salida, contenidos)
+        print(f"\n✅ EPUB generado desde revisión.")
+        print(f"   Guardado en: {ruta_salida}")
+        return
 
     # Extensión de salida según formato
     if ext in (".epub",):
@@ -129,6 +163,7 @@ def main():
 
         errores_total = []
         nodos_traducidos = 0
+        contenidos_epub = {}
 
         for i, capitulo in enumerate(capitulos, 1):
             textos = [str(nodo).strip() for nodo in capitulo.nodos]
@@ -138,13 +173,23 @@ def main():
             traducciones_nodos, errores = traducir_chunks(textos, args.modelo, PAUSA_ENTRE_CHUNKS)
             errores_total.extend(errores)
 
-            aplicar_traducciones_epub(capitulo, traducciones_nodos)
+            item_name, xhtml_bytes = aplicar_traducciones_epub(capitulo, traducciones_nodos)
+            contenidos_epub[item_name] = xhtml_bytes
             nodos_traducidos += len(capitulo.nodos)
 
-        guardar_epub(book, ruta_salida)
+        if args.revisar:
+            dir_revision = ruta_entrada.with_name(ruta_entrada.stem + "_revision")
+            exportar_revision(book, capitulos, dir_revision)
+            print(f"\n✅ Revisión exportada.")
+            print(f"   Carpeta: {dir_revision}")
+            print(f"   Abrí {dir_revision / 'index.html'} en el navegador para revisar.")
+            print(f"   Cuando estés conforme, corré:")
+            print(f"     python traductor-eng-sp.py {ruta_entrada.name} --desde-revision {dir_revision.name}")
+        else:
+            guardar_epub(ruta_entrada, ruta_salida, contenidos_epub)
+            print(f"\n✅ Traducción completada.")
+            print(f"   Guardado en: {ruta_salida}")
 
-        print(f"\n✅ Traducción completada.")
-        print(f"   Guardado en: {ruta_salida}")
         print(f"   Capítulos: {len(capitulos)}, bloques traducidos: {nodos_traducidos}")
         if errores_total:
             print(f"   ⚠️  Chunks con error: {errores_total}")

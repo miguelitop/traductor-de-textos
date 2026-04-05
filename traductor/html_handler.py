@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import re
 
-from bs4 import BeautifulSoup, NavigableString, Tag
+from bs4 import BeautifulSoup, NavigableString, Tag, ProcessingInstruction
 
 # Etiquetas cuyo contenido no se traduce
 _ETIQUETAS_SKIP = {
@@ -36,6 +36,11 @@ def extraer_nodos_texto(soup: BeautifulSoup) -> list[NavigableString]:
     nodos = []
     for nodo in soup.find_all(string=True):
         if not isinstance(nodo, NavigableString):
+            continue
+        # Saltar processing instructions (<?xml ...?>) y nodos huérfanos del documento
+        if isinstance(nodo, ProcessingInstruction):
+            continue
+        if nodo.parent is None or nodo.parent.name == '[document]':
             continue
         if _en_etiqueta_skip(nodo):
             continue
@@ -74,13 +79,28 @@ _VOID_ELEMENTS = {
 }
 
 
+_XML_DECL = '<?xml version="1.0" encoding="utf-8"?>'
+_XHTML_NS = 'xmlns="http://www.w3.org/1999/xhtml"'
+
+
 def serializar_xhtml(soup: BeautifulSoup) -> str:
     """Serializa el árbol como XHTML válido (para contenido EPUB).
 
     BeautifulSoup con html.parser produce void elements sin cierre (<br>).
     EPUB requiere XHTML donde estos deben ser self-closing (<br/>).
+    También asegura declaración XML y namespace XHTML requeridos por lectores
+    como Adobe Digital Editions.
     """
     html = str(soup)
     for tag in _VOID_ELEMENTS:
         html = re.sub(rf'<({tag}\b[^>]*?)(?<!/)\s*>', r'<\1/>', html)
+
+    # Asegurar namespace XHTML en <html>
+    if '<html' in html and _XHTML_NS not in html:
+        html = html.replace('<html', f'<html {_XHTML_NS}', 1)
+
+    # Asegurar declaración XML al inicio
+    if not html.lstrip().startswith('<?xml'):
+        html = _XML_DECL + '\n' + html
+
     return html
