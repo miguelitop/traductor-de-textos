@@ -279,6 +279,16 @@ def main():
 
         aplicar_traducciones_html(nodos, traducciones_nodos)
 
+        # Limitar tamaño de imágenes para que no desborden la página en DOCX
+        style_tag = soup.new_tag("style")
+        style_tag.string = "img { max-width: 75%; height: auto; }"
+        if soup.head:
+            soup.head.append(style_tag)
+        elif soup.html:
+            head_tag = soup.new_tag("head")
+            head_tag.append(style_tag)
+            soup.html.insert(0, head_tag)
+
         # Guardar HTML traducido junto al original (para que los paths relativos
         # a imágenes/CSS de la carpeta asociada sigan funcionando) y convertir a DOCX.
         ruta_html_tmp = ruta_entrada.parent / (ruta_entrada.stem + f"_tmp_{idioma_destino}.html")
