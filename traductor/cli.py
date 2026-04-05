@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 """
-Traduce documentos de inglés a español usando Ollama + TranslateGemma.
+Traduce documentos entre idiomas usando Ollama.
 Soporta DOCX (preservando formato), PDF, RTF, DOC, ODT (vía LibreOffice),
 EPUB (nativo, preservando imágenes y estilos) y HTML.
 
 Uso:
-    python traductor-eng-sp.py libro.docx
-    python traductor-eng-sp.py libro.epub
-    python traductor-eng-sp.py libro.pdf --modelo translategemma:12b
-    python traductor-eng-sp.py libro.rtf --chunk-palabras 400 --salida mi_traduccion.docx
+    python traductor-eng-sp.py libro.docx                          # selector interactivo de idiomas
+    python traductor-eng-sp.py libro.epub --de-idioma en --a-idioma es  # inglés → español directo
+    python traductor-eng-sp.py libro.pdf --de-idioma fr --a-idioma de  # francés → alemán
 """
 
 import argparse
@@ -38,6 +37,7 @@ from .docx_handler import (extraer_unidades, aplicar_traducciones, aplicar_fuent
 from .epub_handler import (abrir_epub, extraer_capitulos, aplicar_traducciones_epub, guardar_epub,
                            exportar_revision, importar_revision)
 from .html_handler import parsear_html, extraer_nodos_texto, aplicar_traducciones_html, serializar_html
+from .idiomas import seleccionar_idioma, idioma_por_codigo, _IDIOMAS_POR_CODIGO
 from .translator import traducir_chunks
 
 FORMATOS_SOPORTADOS = {".docx", ".pdf", ".rtf", ".doc", ".odt", ".epub", ".html", ".htm"}
@@ -61,9 +61,17 @@ def verificar_modelo(modelo: str):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Traduce documentos de inglés a español usando Ollama + TranslateGemma"
+        description="Traduce documentos entre idiomas usando Ollama"
     )
     parser.add_argument("entrada", help="Archivo de entrada (DOCX, PDF, RTF, DOC, ODT, EPUB)")
+    parser.add_argument(
+        "--de-idioma", default=None, metavar="CÓDIGO",
+        help="Idioma de origen (código de 2 letras, ej: en). Si se omite, selector interactivo"
+    )
+    parser.add_argument(
+        "--a-idioma", default=None, metavar="CÓDIGO",
+        help="Idioma de destino (código de 2 letras, ej: es). Si se omite, selector interactivo"
+    )
     parser.add_argument(
         "--modelo", default=MODELO_DEFAULT,
         help=f"Modelo Ollama a usar (default: {MODELO_DEFAULT})"
@@ -74,7 +82,7 @@ def main():
     )
     parser.add_argument(
         "--salida", default=None,
-        help="Archivo DOCX de salida (default: <entrada>_es.docx)"
+        help="Archivo de salida (default: <entrada>_<destino>.<ext>)"
     )
     parser.add_argument(
         "--fuente", default=None,
@@ -117,7 +125,7 @@ def main():
             sys.exit(1)
 
         ruta_salida = Path(args.salida) if args.salida else ruta_entrada.with_name(
-            ruta_entrada.stem + "_es.epub"
+            ruta_entrada.stem + "_traducido.epub"
         )
 
         print(f"📖 Leyendo EPUB original: {ruta_entrada.name}")
@@ -130,13 +138,31 @@ def main():
         print(f"   Guardado en: {ruta_salida}")
         return
 
+    # ── Selección de idiomas ──
+    # Validar códigos si se pasaron por CLI
+    for arg_name, arg_val in [("--de-idioma", args.de_idioma), ("--a-idioma", args.a_idioma)]:
+        if arg_val and arg_val not in _IDIOMAS_POR_CODIGO:
+            print(f"❌ Código de idioma '{arg_val}' no reconocido para {arg_name}")
+            sys.exit(1)
+
+    idioma_origen = args.de_idioma or seleccionar_idioma("Idioma de origen:", default="en")
+    idioma_destino = args.a_idioma or seleccionar_idioma("Idioma de destino:", default="es")
+
+    if idioma_origen == idioma_destino:
+        print("❌ El idioma de origen y destino no pueden ser el mismo.")
+        sys.exit(1)
+
+    nombre_origen = _IDIOMAS_POR_CODIGO[idioma_origen][0]  # nombre en inglés
+    nombre_destino = _IDIOMAS_POR_CODIGO[idioma_destino][0]
+    print(f"\n🌐 {idioma_por_codigo(idioma_origen)} → {idioma_por_codigo(idioma_destino)}")
+
     # Extensión de salida según formato
     if ext in (".epub",):
-        ext_salida = "_es.epub"
+        ext_salida = f"_{idioma_destino}.epub"
     elif ext in (".html", ".htm"):
-        ext_salida = "_es.html"
+        ext_salida = f"_{idioma_destino}.html"
     else:
-        ext_salida = "_es.docx"
+        ext_salida = f"_{idioma_destino}.docx"
 
     ruta_salida = Path(args.salida) if args.salida else ruta_entrada.with_name(
         ruta_entrada.stem + ext_salida
@@ -170,7 +196,9 @@ def main():
             print(f"\n   Capítulo {i}/{len(capitulos)}: {len(textos)} bloques de texto")
 
             # Traducir cada nodo como chunk independiente → correspondencia 1:1 garantizada
-            traducciones_nodos, errores = traducir_chunks(textos, args.modelo, PAUSA_ENTRE_CHUNKS)
+            traducciones_nodos, errores = traducir_chunks(textos, args.modelo, PAUSA_ENTRE_CHUNKS,
+                                                            idioma_origen, idioma_destino,
+                                                            nombre_origen, nombre_destino)
             errores_total.extend(errores)
 
             item_name, xhtml_bytes = aplicar_traducciones_epub(capitulo, traducciones_nodos)
@@ -211,7 +239,9 @@ def main():
         print(f"   {total_palabras:,} palabras, {len(textos)} bloques de texto")
 
         # Traducir cada nodo como chunk independiente → correspondencia 1:1 garantizada
-        traducciones_nodos, errores = traducir_chunks(textos, args.modelo, PAUSA_ENTRE_CHUNKS)
+        traducciones_nodos, errores = traducir_chunks(textos, args.modelo, PAUSA_ENTRE_CHUNKS,
+                                                            idioma_origen, idioma_destino,
+                                                            nombre_origen, nombre_destino)
 
         aplicar_traducciones_html(nodos, traducciones_nodos)
         ruta_salida.write_text(serializar_html(soup), encoding="utf-8")
@@ -250,7 +280,9 @@ def main():
         mins = tiempo_estimado // 60
         print(f"   Tiempo estimado: ~{mins} minutos\n")
 
-        traducciones, errores = traducir_chunks(chunks, args.modelo, PAUSA_ENTRE_CHUNKS)
+        traducciones, errores = traducir_chunks(chunks, args.modelo, PAUSA_ENTRE_CHUNKS,
+                                                    idioma_origen, idioma_destino,
+                                                    nombre_origen, nombre_destino)
 
         texto_traducido = "\n".join(traducciones)
         parrafos_traducidos = [p.strip() for p in texto_traducido.split("\n") if p.strip()]
