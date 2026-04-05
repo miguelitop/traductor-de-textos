@@ -120,8 +120,13 @@ def convertir_a_docx(ruta: Path, dir_tmp: Path) -> Path:
     arg_entrada = _ruta_para_exe(ruta_limpia, soffice_win)
 
     print(f"🔄 Convirtiendo {ruta.name} a DOCX con LibreOffice...")
+    cmd = [soffice, "--headless"]
+    # HTML necesita infilter explícito para abrirse como Writer y no como Web document
+    if ruta.suffix.lower() in (".html", ".htm"):
+        cmd.append('--infilter=HTML (StarWriter)')
+    cmd.extend(["--convert-to", "docx", "--outdir", arg_outdir, arg_entrada])
     resultado = subprocess.run(
-        [soffice, "--headless", "--convert-to", "docx", "--outdir", arg_outdir, arg_entrada],
+        cmd,
         capture_output=True,
         text=True,
         timeout=120,
@@ -139,7 +144,11 @@ def convertir_a_docx(ruta: Path, dir_tmp: Path) -> Path:
             docx_salida = docx_files[0]
         else:
             print(f"❌ No se generó el archivo DOCX esperado.")
-            print(f"   Salida de LibreOffice: {resultado.stdout}")
+            print(f"   stdout: {resultado.stdout}")
+            print(f"   stderr: {resultado.stderr}")
+            print(f"   returncode: {resultado.returncode}")
+            print(f"   Directorio temporal: {dir_tmp}")
+            print(f"   Contenido: {list(dir_tmp.iterdir())}")
             sys.exit(1)
 
     print(f"   Convertido a DOCX exitosamente.")

@@ -36,14 +36,15 @@ from .docx_handler import (extraer_unidades, aplicar_traducciones, aplicar_fuent
                            guardar_docx)
 from .epub_handler import (abrir_epub, extraer_capitulos, aplicar_traducciones_epub, guardar_epub,
                            exportar_revision, importar_revision)
-from .html_handler import parsear_html, extraer_nodos_texto, aplicar_traducciones_html, serializar_html
+from .html_handler import (parsear_html, extraer_nodos_texto, aplicar_traducciones_html,
+                            serializar_html, agrupar_nodos, juntar_grupo, separar_grupo)
 from .idiomas import seleccionar_idioma, idioma_por_codigo, _IDIOMAS_POR_CODIGO
 from .translator import traducir_chunks
 
 FORMATOS_SOPORTADOS = {".docx", ".pdf", ".rtf", ".doc", ".odt", ".epub", ".html", ".htm"}
 
 
-def verificar_modelo(modelo: str):
+def verificar_modelo(modelo: str, actualizar: bool = False):
     """Verifica que Ollama esté corriendo y el modelo disponible."""
     print(f"\n🔍 Verificando modelo '{modelo}' en Ollama...")
     try:
@@ -57,13 +58,27 @@ def verificar_modelo(modelo: str):
         print(f"⚠️  Modelo '{modelo}' no encontrado localmente.")
         print(f"   Descargándolo ahora (puede tardar varios minutos)...")
         ollama.pull(modelo)
+    elif actualizar:
+        print(f"🔄 Buscando actualizaciones para '{modelo}'...")
+        hubo_descarga = False
+        for progreso in ollama.pull(modelo, stream=True):
+            status = progreso.get("status", "")
+            total = progreso.get("total")
+            completed = progreso.get("completed")
+            if status.startswith("pulling") and total and completed is not None and completed < total:
+                hubo_descarga = True
+        if hubo_descarga:
+            print(f"   ✅ Modelo '{modelo}' actualizado a la última versión.")
+        else:
+            print(f"   ✅ '{modelo}' ya está en la última versión.")
 
 
 def main():
     parser = argparse.ArgumentParser(
         description="Traduce documentos entre idiomas usando Ollama"
     )
-    parser.add_argument("entrada", help="Archivo de entrada (DOCX, PDF, RTF, DOC, ODT, EPUB)")
+    parser.add_argument("entrada", nargs="?", default=None,
+                        help="Archivo de entrada (DOCX, PDF, RTF, DOC, ODT, EPUB)")
     parser.add_argument(
         "--de-idioma", default=None, metavar="CÓDIGO",
         help="Idioma de origen (código de 2 letras, ej: en). Si se omite, selector interactivo"
@@ -100,7 +115,19 @@ def main():
         "--desde-revision", default=None, metavar="CARPETA",
         help="EPUB: generar EPUB final usando HTMLs corregidos de una carpeta de revisión"
     )
+    parser.add_argument(
+        "--actualizar-modelo", action="store_true",
+        help="Verificar si hay una versión más nueva del modelo en el registro de Ollama"
+    )
     args = parser.parse_args()
+
+    # Modo solo actualización de modelo (sin archivo de entrada)
+    if args.actualizar_modelo and not args.entrada:
+        verificar_modelo(args.modelo, actualizar=True)
+        return
+
+    if not args.entrada:
+        parser.error("se requiere un archivo de entrada (o usar --actualizar-modelo solo)")
 
     ruta_entrada = Path(args.entrada)
     if not ruta_entrada.exists():
@@ -160,7 +187,7 @@ def main():
     if ext in (".epub",):
         ext_salida = f"_{idioma_destino}.epub"
     elif ext in (".html", ".htm"):
-        ext_salida = f"_{idioma_destino}.html"
+        ext_salida = f"_{idioma_destino}.docx"
     else:
         ext_salida = f"_{idioma_destino}.docx"
 
@@ -168,7 +195,7 @@ def main():
         ruta_entrada.stem + ext_salida
     )
 
-    verificar_modelo(args.modelo)
+    verificar_modelo(args.modelo, actualizar=args.actualizar_modelo)
 
     print(f"📖 Leyendo: {ruta_entrada.name}")
 
@@ -236,20 +263,45 @@ def main():
         textos = [str(n).strip() for n in nodos]
         total_palabras = sum(len(t.split()) for t in textos)
 
-        print(f"   {total_palabras:,} palabras, {len(textos)} bloques de texto")
+        # Agrupar nodos en chunks para reducir llamadas a Ollama
+        grupos = agrupar_nodos(textos, args.chunk_palabras)
+        print(f"   {total_palabras:,} palabras, {len(textos)} bloques → {len(grupos)} chunks")
 
-        # Traducir cada nodo como chunk independiente → correspondencia 1:1 garantizada
-        traducciones_nodos, errores = traducir_chunks(textos, args.modelo, PAUSA_ENTRE_CHUNKS,
+        chunks_agrupados = [juntar_grupo(textos, g) for g in grupos]
+        traducciones_chunks, errores = traducir_chunks(chunks_agrupados, args.modelo, PAUSA_ENTRE_CHUNKS,
                                                             idioma_origen, idioma_destino,
                                                             nombre_origen, nombre_destino)
 
-        aplicar_traducciones_html(nodos, traducciones_nodos)
-        ruta_salida.write_text(serializar_html(soup), encoding="utf-8")
+        # Desagrupar traducciones para recuperar correspondencia 1:1 con nodos
+        traducciones_nodos = []
+        for traduccion, grupo in zip(traducciones_chunks, grupos):
+            traducciones_nodos.extend(separar_grupo(traduccion, len(grupo)))
 
-        print(f"\n✅ Traducción completada.")
-        print(f"   Guardado en: {ruta_salida}")
-        if errores:
-            print(f"   ⚠️  Chunks con error: {errores}")
+        aplicar_traducciones_html(nodos, traducciones_nodos)
+
+        # Guardar HTML traducido junto al original (para que los paths relativos
+        # a imágenes/CSS de la carpeta asociada sigan funcionando) y convertir a DOCX.
+        ruta_html_tmp = ruta_entrada.parent / (ruta_entrada.stem + f"_tmp_{idioma_destino}.html")
+        try:
+            ruta_html_tmp.write_text(serializar_html(soup), encoding="utf-8")
+
+            dir_tmp = Path(tempfile.mkdtemp(prefix="traductor_"))
+            ruta_docx = convertir_a_docx(ruta_html_tmp, dir_tmp)
+
+            ruta_salida = Path(args.salida) if args.salida else ruta_entrada.with_name(
+                ruta_entrada.stem + f"_{idioma_destino}.docx"
+            )
+            shutil.copy2(ruta_docx, ruta_salida)
+
+            print(f"\n✅ Traducción completada.")
+            print(f"   Guardado en: {ruta_salida}")
+            if errores:
+                print(f"   ⚠️  Chunks con error: {errores}")
+        finally:
+            if ruta_html_tmp.exists():
+                ruta_html_tmp.unlink()
+            if dir_tmp.exists():
+                shutil.rmtree(dir_tmp, ignore_errors=True)
         return
 
     # ── Rama DOCX / PDF / otros (vía conversión) ──

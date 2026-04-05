@@ -17,12 +17,20 @@ def traducir_chunk(texto: str, modelo: str,
             "You MUST preserve these markers exactly, translating only the text between "
             f"the colon and the closing \u00bb. Never remove, reorder, or alter the marker numbers. "
         )
+    instruccion_separador = ""
+    if "||||" in texto:
+        instruccion_separador = (
+            "IMPORTANT: The text contains segment separators '||||'. "
+            "You MUST preserve each '||||' separator exactly as-is in your translation. "
+            "Translate each segment independently but keep the separators in place. "
+        )
     prompt = (
         f"You are a professional {nombre_origen} ({idioma_origen}) to {nombre_destino} ({idioma_destino}) translator. "
         f"Your goal is to accurately convey the meaning and nuances of the original "
         f"{nombre_origen} text while adhering to {nombre_destino} grammar, vocabulary, and cultural sensitivities. "
         f"Produce only the {nombre_destino} translation, without any additional explanations or commentary. "
         f"{instruccion_links}"
+        f"{instruccion_separador}"
         f"Please translate the following {nombre_origen} text into {nombre_destino}:\n\n\n"
         f"{texto}"
     )
