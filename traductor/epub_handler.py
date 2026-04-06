@@ -95,11 +95,18 @@ def guardar_epub(ruta_origen: Path, ruta_salida: Path,
                     reemplazos[zip_name] = data
                     break
 
+        # EPUB spec: mimetype debe ser el primer entry, stored, sin extra field.
+        # Adobe Digital Editions rechaza el EPUB si esto no se cumple.
+        mime_info = zipfile.ZipInfo('mimetype')
+        mime_info.compress_type = zipfile.ZIP_STORED
+        mime_info.extra = b''
+        zout.writestr(mime_info, b'application/epub+zip')
+
         for item in zin.infolist():
-            if item.filename in reemplazos:
-                zout.writestr(item, reemplazos[item.filename])
-            else:
-                zout.writestr(item, zin.read(item.filename))
+            if item.filename == 'mimetype':
+                continue  # ya escrito arriba
+            data = reemplazos.get(item.filename, zin.read(item.filename))
+            zout.writestr(item, data)
     shutil.move(str(tmp), str(ruta_salida))
 
 

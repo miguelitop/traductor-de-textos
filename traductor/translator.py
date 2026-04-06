@@ -37,8 +37,25 @@ def traducir_chunk(texto: str, modelo: str,
     response = ollama.chat(
         model=modelo,
         messages=[{"role": "user", "content": prompt}],
+        options={"repeat_penalty": 1.3, "repeat_last_n": 128},
     )
-    return response["message"]["content"].strip()
+    resultado = response["message"]["content"].strip()
+
+    # Detectar alucinación repetitiva: si una frase corta se repite muchas veces
+    palabras = resultado.split()
+    if len(palabras) > 40:
+        # Buscar cualquier trigrama que se repita excesivamente
+        trigramas = [" ".join(palabras[i:i+3]) for i in range(len(palabras) - 2)]
+        from collections import Counter
+        conteos = Counter(trigramas)
+        mas_comun, freq = conteos.most_common(1)[0]
+        if freq > len(trigramas) * 0.15:
+            raise ValueError(
+                f"Repetición detectada ({freq}x '{mas_comun}'). "
+                f"Reintentando chunk."
+            )
+
+    return resultado
 
 
 def traducir_chunks(chunks: list[str], modelo: str, pausa: float,
