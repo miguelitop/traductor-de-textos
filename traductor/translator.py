@@ -36,10 +36,15 @@ def traducir_chunk(texto: str, modelo: str,
         f"Please translate the following {nombre_origen} text into {nombre_destino}:\n\n\n"
         f"{texto}"
     )
+    # Limitar tokens de salida al doble del input para cortar alucinaciones repetitivas
+    palabras_entrada = len(texto.split())
+    max_tokens = max(256, int(palabras_entrada * 2 * 1.3))
+
     response = ollama.chat(
         model=modelo,
         messages=[{"role": "user", "content": prompt}],
-        options={"repeat_penalty": 1.3, "repeat_last_n": 128},
+        options={"repeat_penalty": 1.3, "repeat_last_n": 128,
+                 "num_predict": max_tokens},
     )
     resultado = response["message"]["content"].strip()
 
@@ -64,7 +69,6 @@ def traducir_chunk(texto: str, modelo: str,
                 )
 
         # Detectar si la salida es absurdamente más larga que la entrada
-        palabras_entrada = len(texto.split())
         if len(palabras) > palabras_entrada * 4 and len(palabras) > 100:
             raise ValueError(
                 f"Salida sospechosamente larga ({len(palabras)} palabras vs "

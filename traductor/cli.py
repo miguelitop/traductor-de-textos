@@ -14,6 +14,7 @@ import argparse
 import shutil
 import sys
 import tempfile
+from datetime import datetime
 from pathlib import Path
 
 try:
@@ -42,6 +43,21 @@ from .idiomas import seleccionar_idioma, idioma_por_codigo, _IDIOMAS_POR_CODIGO
 from .translator import traducir_chunks
 
 FORMATOS_SOPORTADOS = {".docx", ".pdf", ".rtf", ".doc", ".odt", ".epub", ".html", ".htm"}
+
+
+def _imprimir_duracion(inicio: datetime):
+    """Imprime fecha/hora de fin y duración del proceso."""
+    fin = datetime.now()
+    duracion = fin - inicio
+    horas, resto = divmod(int(duracion.total_seconds()), 3600)
+    minutos, segundos = divmod(resto, 60)
+    partes = []
+    if horas:
+        partes.append(f"{horas}h")
+    if minutos:
+        partes.append(f"{minutos}m")
+    partes.append(f"{segundos}s")
+    print(f"⏱️  Fin:    {fin.strftime('%Y-%m-%d %H:%M:%S')}  (duración: {' '.join(partes)})")
 
 
 def guardar_reporte_sospechosos(ruta_salida: Path, sospechosos: list[dict]) -> Path | None:
@@ -215,6 +231,9 @@ def main():
         ruta_entrada.stem + ext_salida
     )
 
+    inicio = datetime.now()
+    print(f"\n⏱️  Inicio: {inicio.strftime('%Y-%m-%d %H:%M:%S')}")
+
     verificar_modelo(args.modelo, actualizar=args.actualizar_modelo)
 
     print(f"📖 Leyendo: {ruta_entrada.name}")
@@ -275,6 +294,7 @@ def main():
         ruta_reporte = guardar_reporte_sospechosos(ruta_salida, sospechosos_total)
         if ruta_reporte:
             print(f"   👁️  {len(sospechosos_total)} bloque(s) con posible anomalía → {ruta_reporte.name}")
+        _imprimir_duracion(inicio)
         return
 
     # ── Rama HTML ──
@@ -337,6 +357,7 @@ def main():
             ruta_reporte = guardar_reporte_sospechosos(ruta_salida, sospechosos)
             if ruta_reporte:
                 print(f"   👁️  {len(sospechosos)} chunk(s) con posible anomalía → {ruta_reporte.name}")
+            _imprimir_duracion(inicio)
         finally:
             if ruta_html_tmp.exists():
                 ruta_html_tmp.unlink()
@@ -401,6 +422,7 @@ def main():
         ruta_reporte = guardar_reporte_sospechosos(ruta_salida, sospechosos)
         if ruta_reporte:
             print(f"   👁️  {len(sospechosos)} chunk(s) con posible anomalía → {ruta_reporte.name}")
+        _imprimir_duracion(inicio)
 
     finally:
         if dir_tmp and dir_tmp.exists():
