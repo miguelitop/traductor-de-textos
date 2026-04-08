@@ -44,6 +44,26 @@ from .translator import traducir_chunks
 FORMATOS_SOPORTADOS = {".docx", ".pdf", ".rtf", ".doc", ".odt", ".epub", ".html", ".htm"}
 
 
+def guardar_reporte_sospechosos(ruta_salida: Path, sospechosos: list[dict]) -> Path | None:
+    """Guarda un reporte de traducciones sospechosas junto al archivo de salida.
+    Devuelve la ruta del reporte o None si no hay sospechosos.
+    """
+    if not sospechosos:
+        return None
+    ruta_reporte = ruta_salida.with_name(ruta_salida.stem + "_sospechosos.txt")
+    lineas = [f"Reporte de traducciones sospechosas — {ruta_salida.name}", "=" * 60, ""]
+    for s in sospechosos:
+        ref = s.get("referencia", f"Chunk {s['chunk']}")
+        lineas.append(f"👁️  {ref}")
+        lineas.append(f"   Anomalías: {', '.join(s['anomalias'])}")
+        lineas.append(f"   Original:    {s['original']}...")
+        lineas.append(f"   Traducción:  {s['traduccion']}...")
+        lineas.append("")
+    lineas.append(f"Total: {len(sospechosos)} bloque(s) sospechoso(s)")
+    ruta_reporte.write_text("\n".join(lineas), encoding="utf-8")
+    return ruta_reporte
+
+
 def verificar_modelo(modelo: str, actualizar: bool = False):
     """Verifica que Ollama esté corriendo y el modelo disponible."""
     print(f"\n🔍 Verificando modelo '{modelo}' en Ollama...")
@@ -215,6 +235,7 @@ def main():
         print(f"   {len(capitulos)} capítulos, {total_nodos} bloques de texto, {total_palabras:,} palabras")
 
         errores_total = []
+        sospechosos_total = []
         nodos_traducidos = 0
         contenidos_epub = {}
 
@@ -223,10 +244,13 @@ def main():
             print(f"\n   Capítulo {i}/{len(capitulos)}: {len(textos)} bloques de texto")
 
             # Traducir cada nodo como chunk independiente → correspondencia 1:1 garantizada
-            traducciones_nodos, errores = traducir_chunks(textos, args.modelo, PAUSA_ENTRE_CHUNKS,
+            traducciones_nodos, errores, sospechosos_cap = traducir_chunks(textos, args.modelo, PAUSA_ENTRE_CHUNKS,
                                                             idioma_origen, idioma_destino,
                                                             nombre_origen, nombre_destino)
             errores_total.extend(errores)
+            for s in sospechosos_cap:
+                s["referencia"] = f"Capítulo {i}, bloque {s['chunk']}"
+            sospechosos_total.extend(sospechosos_cap)
 
             item_name, xhtml_bytes = aplicar_traducciones_epub(capitulo, traducciones_nodos)
             contenidos_epub[item_name] = xhtml_bytes
@@ -248,6 +272,9 @@ def main():
         print(f"   Capítulos: {len(capitulos)}, bloques traducidos: {nodos_traducidos}")
         if errores_total:
             print(f"   ⚠️  Chunks con error: {errores_total}")
+        ruta_reporte = guardar_reporte_sospechosos(ruta_salida, sospechosos_total)
+        if ruta_reporte:
+            print(f"   👁️  {len(sospechosos_total)} bloque(s) con posible anomalía → {ruta_reporte.name}")
         return
 
     # ── Rama HTML ──
@@ -268,7 +295,7 @@ def main():
         print(f"   {total_palabras:,} palabras, {len(textos)} bloques → {len(grupos)} chunks")
 
         chunks_agrupados = [juntar_grupo(textos, g) for g in grupos]
-        traducciones_chunks, errores = traducir_chunks(chunks_agrupados, args.modelo, PAUSA_ENTRE_CHUNKS,
+        traducciones_chunks, errores, sospechosos = traducir_chunks(chunks_agrupados, args.modelo, PAUSA_ENTRE_CHUNKS,
                                                             idioma_origen, idioma_destino,
                                                             nombre_origen, nombre_destino)
 
@@ -307,6 +334,9 @@ def main():
             print(f"   Guardado en: {ruta_salida}")
             if errores:
                 print(f"   ⚠️  Chunks con error: {errores}")
+            ruta_reporte = guardar_reporte_sospechosos(ruta_salida, sospechosos)
+            if ruta_reporte:
+                print(f"   👁️  {len(sospechosos)} chunk(s) con posible anomalía → {ruta_reporte.name}")
         finally:
             if ruta_html_tmp.exists():
                 ruta_html_tmp.unlink()
@@ -342,7 +372,7 @@ def main():
         mins = tiempo_estimado // 60
         print(f"   Tiempo estimado: ~{mins} minutos\n")
 
-        traducciones, errores = traducir_chunks(chunks, args.modelo, PAUSA_ENTRE_CHUNKS,
+        traducciones, errores, sospechosos = traducir_chunks(chunks, args.modelo, PAUSA_ENTRE_CHUNKS,
                                                     idioma_origen, idioma_destino,
                                                     nombre_origen, nombre_destino)
 
@@ -368,6 +398,9 @@ def main():
         print(f"   Chunks procesados: {len(chunks) - len(errores)}/{len(chunks)}")
         if errores:
             print(f"   ⚠️  Chunks con error (revisar manualmente): {errores}")
+        ruta_reporte = guardar_reporte_sospechosos(ruta_salida, sospechosos)
+        if ruta_reporte:
+            print(f"   👁️  {len(sospechosos)} chunk(s) con posible anomalía → {ruta_reporte.name}")
 
     finally:
         if dir_tmp and dir_tmp.exists():

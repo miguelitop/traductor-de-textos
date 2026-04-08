@@ -25,8 +25,11 @@ def _en_etiqueta_skip(nodo: NavigableString) -> bool:
     """Devuelve True si el nodo está dentro de una etiqueta que no se traduce."""
     padre = nodo.parent
     while padre:
-        if isinstance(padre, Tag) and padre.name in _ETIQUETAS_SKIP:
-            return True
+        if isinstance(padre, Tag):
+            # Comparar sin prefijo de namespace (ej: "mml:math" → "math")
+            nombre = padre.name.split(":")[-1] if ":" in padre.name else padre.name
+            if nombre in _ETIQUETAS_SKIP:
+                return True
         padre = padre.parent
     return False
 
