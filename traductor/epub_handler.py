@@ -29,7 +29,8 @@ import ebooklib
 from ebooklib import epub
 from bs4 import NavigableString, Tag
 
-from .html_handler import extraer_nodos_texto, aplicar_traducciones_html, parsear_html, serializar_xhtml
+from .html_handler import (extraer_nodos_texto, aplicar_traducciones_html, parsear_html,
+                           serializar_xhtml, extraer_pagebreaks, reinsertar_pagebreaks)
 
 
 @dataclass
@@ -39,6 +40,8 @@ class CapituloEPUB:
     nodos: list[NavigableString] = field(default_factory=list)
     # soup se guarda aquí para poder serializar después
     soup: object = None
+    # pagebreaks extraídos para reinsertar después de traducir
+    pagebreaks: list = field(default_factory=list)
 
 
 def abrir_epub(ruta: Path) -> epub.EpubBook:
@@ -50,10 +53,14 @@ def extraer_capitulos(book: epub.EpubBook) -> list[CapituloEPUB]:
     capitulos = []
     for item in book.get_items_of_type(ebooklib.ITEM_DOCUMENT):
         soup = parsear_html(item.get_content())
+        # Extraer spans pagebreak antes de extraer texto para que no
+        # rompan nodos de texto en fragmentos que se traducen mal
+        pagebreaks = extraer_pagebreaks(soup)
         nodos = extraer_nodos_texto(soup)
         if not nodos:
             continue
-        capitulos.append(CapituloEPUB(item=item, nodos=nodos, soup=soup))
+        capitulos.append(CapituloEPUB(item=item, nodos=nodos, soup=soup,
+                                       pagebreaks=pagebreaks))
     return capitulos
 
 
@@ -61,6 +68,8 @@ def aplicar_traducciones_epub(capitulo: CapituloEPUB,
                                traducciones: list[str]) -> tuple[str, bytes]:
     """Aplica traducciones al capítulo y retorna (item_name, xhtml_bytes)."""
     aplicar_traducciones_html(capitulo.nodos, traducciones)
+    if capitulo.pagebreaks:
+        reinsertar_pagebreaks(capitulo.pagebreaks)
     xhtml = serializar_xhtml(capitulo.soup)
     return capitulo.item.get_name(), xhtml.encode("utf-8")
 

@@ -3,9 +3,11 @@ Traduce el contenido textual de un documento HTML preservando todas las etiqueta
 atributos, imágenes y enlaces.
 
 Flujo:
-  1. extraer_nodos_texto()  → lista de nodos de texto NavigableString
-  2. traducir_chunks() (externo) sobre los textos extraídos
-  3. aplicar_traducciones_html() → reinyecta las traducciones en el árbol BeautifulSoup
+  1. extraer_pagebreaks()   → extrae spans pagebreak que rompen texto, mergea nodos
+  2. extraer_nodos_texto()  → lista de nodos de texto NavigableString
+  3. traducir_chunks() (externo) sobre los textos extraídos
+  4. aplicar_traducciones_html() → reinyecta las traducciones en el árbol BeautifulSoup
+  5. reinsertar_pagebreaks() → devuelve los spans pagebreak a su posición proporcional
 """
 
 from __future__ import annotations
@@ -32,6 +34,100 @@ def _en_etiqueta_skip(nodo: NavigableString) -> bool:
                 return True
         padre = padre.parent
     return False
+
+
+def extraer_pagebreaks(soup: BeautifulSoup) -> list[tuple]:
+    """Extrae spans epub:type=pagebreak que rompen texto dentro de párrafos.
+
+    Estos spans generan dos NavigableString separados que se traducen mal
+    como fragmentos independientes.  Esta función los extrae del DOM,
+    mergea los nodos de texto adyacentes y guarda la información necesaria
+    para reinsertarlos después de la traducción.
+
+    Returns:
+        Lista de (span_element, parent_tag, proporción_posición).
+        La proporción indica dónde estaba el span relativo al texto mergeado.
+        Para reinsertar, procesar en orden inverso con reinsertar_pagebreaks().
+    """
+    guardados = []
+    for span in soup.find_all("span", attrs={"role": "doc-pagebreak"}):
+        parent = span.parent
+        if parent is None:
+            continue
+
+        prev_sib = span.previous_sibling
+        next_sib = span.next_sibling
+
+        # Solo procesar si el span está entre dos nodos de texto
+        if not (isinstance(prev_sib, NavigableString)
+                and isinstance(next_sib, NavigableString)):
+            continue
+
+        # Proporción: dónde estaba el span dentro del texto combinado
+        len_antes = len(str(prev_sib))
+        len_total = len_antes + len(str(next_sib))
+        proporcion = len_antes / len_total if len_total > 0 else 0.5
+
+        # Extraer span y mergear los dos nodos de texto
+        span.extract()
+        texto_mergeado = str(prev_sib) + str(next_sib)
+        next_sib.extract()
+        prev_sib.replace_with(NavigableString(texto_mergeado))
+
+        guardados.append((span, parent, proporcion))
+
+    return guardados
+
+
+def reinsertar_pagebreaks(guardados: list[tuple]) -> None:
+    """Reinserta spans pagebreak después de la traducción.
+
+    Divide el texto traducido en la misma proporción donde estaba el span
+    originalmente, buscando el espacio más cercano para no cortar palabras.
+    Debe llamarse con la lista de guardados en orden inverso al de extracción
+    (se revierte internamente).
+    """
+    for span, parent, proporcion in reversed(guardados):
+        # Buscar el primer nodo de texto con contenido en el padre
+        nodo_texto = None
+        for child in parent.children:
+            if isinstance(child, NavigableString) and child.strip():
+                nodo_texto = child
+                break
+
+        if nodo_texto is None:
+            parent.append(span)
+            continue
+
+        texto = str(nodo_texto)
+        pos = int(len(texto) * proporcion)
+
+        # Buscar el espacio más cercano para no cortar palabras
+        espacio_antes = texto.rfind(" ", 0, pos)
+        espacio_despues = texto.find(" ", pos)
+
+        if espacio_antes == -1 and espacio_despues == -1:
+            punto_corte = pos
+        elif espacio_antes == -1:
+            punto_corte = espacio_despues
+        elif espacio_despues == -1:
+            punto_corte = espacio_antes
+        else:
+            punto_corte = (espacio_antes
+                           if (pos - espacio_antes) <= (espacio_despues - pos)
+                           else espacio_despues)
+
+        parte1 = texto[:punto_corte]
+        parte2 = texto[punto_corte:]
+
+        # Reemplazar nodo de texto con parte1 + span + parte2
+        nodo_texto.replace_with(NavigableString(parte1))
+        # Localizar parte1 en el parent para insertar después
+        for child in parent.children:
+            if isinstance(child, NavigableString) and str(child) == parte1:
+                child.insert_after(NavigableString(parte2))
+                child.insert_after(span)
+                break
 
 
 def extraer_nodos_texto(soup: BeautifulSoup) -> list[NavigableString]:
