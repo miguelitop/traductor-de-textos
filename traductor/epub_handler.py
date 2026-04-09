@@ -30,7 +30,8 @@ from ebooklib import epub
 from bs4 import NavigableString, Tag
 
 from .html_handler import (extraer_nodos_texto, aplicar_traducciones_html, parsear_html,
-                           serializar_xhtml, extraer_pagebreaks, reinsertar_pagebreaks)
+                           serializar_xhtml, extraer_pagebreaks, reinsertar_pagebreaks,
+                           corregir_bibliorefs)
 
 
 @dataclass
@@ -53,6 +54,8 @@ def extraer_capitulos(book: epub.EpubBook) -> list[CapituloEPUB]:
     capitulos = []
     for item in book.get_items_of_type(ebooklib.ITEM_DOCUMENT):
         soup = parsear_html(item.get_content())
+        # Corregir citas bibliográficas mal formateadas
+        corregir_bibliorefs(soup)
         # Extraer spans pagebreak antes de extraer texto para que no
         # rompan nodos de texto en fragmentos que se traducen mal
         pagebreaks = extraer_pagebreaks(soup)

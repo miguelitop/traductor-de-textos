@@ -36,6 +36,47 @@ def _en_etiqueta_skip(nodo: NavigableString) -> bool:
     return False
 
 
+def corregir_bibliorefs(soup: BeautifulSoup) -> None:
+    """Corrige la estructura de citas bibliográficas mal formateadas en EPUB.
+
+    Problema típico:
+        .<a role="doc-biblioref">Harrison, 1997.</a>).
+    Corrección:
+        (<a role="doc-biblioref">Harrison, 1997</a>).
+
+    Aplica tres correcciones:
+    1. Punto antes del primer <a> del grupo → " ("
+    2. Punto final dentro del texto de cada <a> → eliminado
+    3. Números de página entre paréntesis propios .(p. X) → , p. X
+    """
+    for a_tag in soup.find_all("a", attrs={"role": "doc-biblioref"}):
+        # --- Fix 2: quitar punto final del texto dentro del <a> ---
+        if a_tag.string:
+            nuevo = re.sub(r"\.\s*$", "", a_tag.string)
+            if nuevo != a_tag.string:
+                a_tag.string.replace_with(NavigableString(nuevo))
+
+        # --- Fix 1: punto antes del primer <a> del grupo → " (" ---
+        prev = a_tag.previous_sibling
+        if isinstance(prev, NavigableString) and str(prev).endswith("."):
+            # Solo si es el primero del grupo (no hay otro biblioref justo antes)
+            prev_prev = prev.previous_sibling
+            es_primero = not (isinstance(prev_prev, Tag)
+                             and prev_prev.get("role") == "doc-biblioref")
+            if es_primero:
+                prev.replace_with(NavigableString(str(prev)[:-1] + " ("))
+
+        # --- Fix 3: números de página entre paréntesis propios ---
+        next_sib = a_tag.next_sibling
+        if isinstance(next_sib, NavigableString):
+            texto = str(next_sib)
+            # .(p. 38) → , p. 38  |  .(pp. 8–9) → , pp. 8–9  |  .(pág. 5) → , pág. 5
+            texto_nuevo = re.sub(r"\.?\((pp?\.)\s*([^)]+)\)", r", \1 \2", texto)
+            texto_nuevo = re.sub(r"\.?\((págs?\.)\s*([^)]+)\)", r", \1 \2", texto_nuevo)
+            if texto_nuevo != texto:
+                next_sib.replace_with(NavigableString(texto_nuevo))
+
+
 def extraer_pagebreaks(soup: BeautifulSoup) -> list[tuple]:
     """Extrae spans epub:type=pagebreak que rompen texto dentro de párrafos.
 
