@@ -56,15 +56,12 @@ def corregir_bibliorefs(soup: BeautifulSoup) -> None:
             if nuevo != a_tag.string:
                 a_tag.string.replace_with(NavigableString(nuevo))
 
-        # --- Fix 1: punto antes del primer <a> del grupo → " (" ---
+        # --- Fix 1: punto antes del <a> → " (" (inicio de grupo de citas) ---
+        # Entre refs del mismo grupo el texto es "; ", "pp. X; ", etc. (nunca
+        # termina en "."), así que un "." final indica inicio de cita nueva.
         prev = a_tag.previous_sibling
         if isinstance(prev, NavigableString) and str(prev).endswith("."):
-            # Solo si es el primero del grupo (no hay otro biblioref justo antes)
-            prev_prev = prev.previous_sibling
-            es_primero = not (isinstance(prev_prev, Tag)
-                             and prev_prev.get("role") == "doc-biblioref")
-            if es_primero:
-                prev.replace_with(NavigableString(str(prev)[:-1] + " ("))
+            prev.replace_with(NavigableString(str(prev)[:-1] + " ("))
 
         # --- Fix 3: números de página entre paréntesis propios ---
         next_sib = a_tag.next_sibling
