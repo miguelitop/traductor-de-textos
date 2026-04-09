@@ -72,6 +72,16 @@ def corregir_bibliorefs(soup: BeautifulSoup) -> None:
             texto_nuevo = re.sub(r"\.?\((págs?\.)\s*([^)]+)\)", r", \1 \2", texto_nuevo)
             if texto_nuevo != texto:
                 next_sib.replace_with(NavigableString(texto_nuevo))
+                # Refrescar next_sib para el fix 4
+                next_sib = a_tag.next_sibling
+
+        # --- Fix 4: agregar cierre "). " si falta después del último <a> del grupo ---
+        next_sib = a_tag.next_sibling
+        if isinstance(next_sib, NavigableString):
+            texto = str(next_sib)
+            # Si empieza con ), ; o indicadores de página → sigue el grupo
+            if not re.match(r"^[\s)>;]|^,?\s*\.?\(?pp?\.|^,?\s*\.?\(?págs?\.", texto):
+                next_sib.replace_with(NavigableString("). " + texto.lstrip()))
 
 
 def extraer_pagebreaks(soup: BeautifulSoup) -> list[tuple]:
