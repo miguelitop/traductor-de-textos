@@ -32,6 +32,8 @@ def _en_etiqueta_skip(nodo: NavigableString) -> bool:
             nombre = padre.name.split(":")[-1] if ":" in padre.name else padre.name
             if nombre in _ETIQUETAS_SKIP:
                 return True
+            if nombre == "a" and padre.get("role") == "doc-biblioref":
+                return True
         padre = padre.parent
     return False
 
