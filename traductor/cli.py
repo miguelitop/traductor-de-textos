@@ -30,17 +30,18 @@ except ImportError:
     sys.exit(1)
 
 from .config import (MODELO_DEFAULT, CHUNK_PALABRAS, PAUSA_ENTRE_CHUNKS,
-                     FUENTE_DEFAULT, TAMANO_FUENTE_DEFAULT)
+                     FUENTE_DEFAULT, TAMANO_FUENTE_DEFAULT, MODELO_VISION_DEFAULT)
 from .chunker import dividir_en_chunks
 from .converter import convertir_a_docx, convertir_con_calibre
 from .docx_handler import (extraer_unidades, aplicar_traducciones, aplicar_fuente,
-                           guardar_docx)
+                           guardar_docx, extraer_imagenes, aplicar_captions_imagenes)
 from .epub_handler import (abrir_epub, extraer_capitulos, aplicar_traducciones_epub, guardar_epub,
-                           exportar_revision, importar_revision)
+                           exportar_revision, importar_revision, extraer_imagenes_epub)
 from .html_handler import (parsear_html, extraer_nodos_texto, aplicar_traducciones_html,
-                            serializar_html, agrupar_nodos, juntar_grupo, separar_grupo)
+                            serializar_html, agrupar_nodos, juntar_grupo, separar_grupo,
+                            extraer_imagenes_html, aplicar_captions_imagenes_html)
 from .idiomas import seleccionar_idioma, idioma_por_codigo, _IDIOMAS_POR_CODIGO
-from .translator import traducir_chunks
+from .translator import traducir_chunks, traducir_imagenes
 
 FORMATOS_SOPORTADOS = {".docx", ".pdf", ".rtf", ".doc", ".odt", ".epub", ".html", ".htm"}
 
@@ -155,6 +156,16 @@ def main():
         "--actualizar-modelo", action="store_true",
         help="Verificar si hay una versión más nueva del modelo en el registro de Ollama"
     )
+    parser.add_argument(
+        "--traducir-imagenes", action="store_true",
+        help="También traducir el texto que aparece dentro de las imágenes (OCR + traducción "
+             "via modelo de visión). Agrega un caption debajo de cada imagen con texto."
+    )
+    parser.add_argument(
+        "--modelo-vision", default=MODELO_VISION_DEFAULT,
+        help=f"Modelo Ollama de visión a usar con --traducir-imagenes "
+             f"(default: {MODELO_VISION_DEFAULT})"
+    )
     args = parser.parse_args()
 
     # Modo solo actualización de modelo (sin archivo de entrada)
@@ -235,6 +246,8 @@ def main():
     print(f"\n⏱️  Inicio: {inicio.strftime('%Y-%m-%d %H:%M:%S')}")
 
     verificar_modelo(args.modelo, actualizar=args.actualizar_modelo)
+    if args.traducir_imagenes:
+        verificar_modelo(args.modelo_vision, actualizar=args.actualizar_modelo)
 
     print(f"📖 Leyendo: {ruta_entrada.name}")
 
@@ -252,6 +265,19 @@ def main():
             len(nodo.strip().split()) for c in capitulos for nodo in c.nodos
         )
         print(f"   {len(capitulos)} capítulos, {total_nodos} bloques de texto, {total_palabras:,} palabras")
+
+        # Traducción de imágenes (opt-in): se hace antes de aplicar texto para
+        # que cada capítulo se serialice una sola vez con todo aplicado.
+        imagenes_epub = []
+        if args.traducir_imagenes:
+            imagenes_epub = extraer_imagenes_epub(book, capitulos)
+            if imagenes_epub:
+                print(f"\n🖼️  Imágenes con posible texto: {len(imagenes_epub)}")
+                con_texto, sin_texto, errs_img = traducir_imagenes(
+                    imagenes_epub, args.modelo_vision,
+                    nombre_origen, nombre_destino,
+                )
+                print(f"   (con texto: {con_texto}, sin texto: {sin_texto}, errores: {errs_img})")
 
         errores_total = []
         sospechosos_total = []
@@ -325,6 +351,28 @@ def main():
             traducciones_nodos.extend(separar_grupo(traduccion, len(grupo)))
 
         aplicar_traducciones_html(nodos, traducciones_nodos)
+
+        # Traducción de imágenes (opt-in): resolver es file-system relativo al HTML
+        if args.traducir_imagenes:
+            html_dir = ruta_entrada.parent
+            def _resolver_html(href: str) -> bytes | None:
+                if href.startswith(("http://", "https://", "data:")):
+                    return None
+                ruta = (html_dir / href.split("#", 1)[0]).resolve()
+                try:
+                    return ruta.read_bytes()
+                except Exception:
+                    return None
+            imagenes_html = extraer_imagenes_html(soup, _resolver_html)
+            if imagenes_html:
+                print(f"\n🖼️  Imágenes con posible texto: {len(imagenes_html)}")
+                con_texto, sin_texto, errs_img = traducir_imagenes(
+                    imagenes_html, args.modelo_vision,
+                    nombre_origen, nombre_destino,
+                )
+                aplicados = aplicar_captions_imagenes_html(imagenes_html)
+                print(f"   Captions agregados: {aplicados}  "
+                      f"(con texto: {con_texto}, sin texto: {sin_texto}, errores: {errs_img})")
 
         # Limitar tamaño de imágenes para que no desborden la página en DOCX
         style_tag = soup.new_tag("style")
@@ -407,6 +455,20 @@ def main():
                 unidad.traduccion = unidad.texto
 
         aplicar_traducciones(unidades)
+
+        # Traducción de texto en imágenes (opt-in)
+        if args.traducir_imagenes:
+            imagenes = extraer_imagenes(doc)
+            if imagenes:
+                print(f"\n🖼️  Imágenes con posible texto: {len(imagenes)}")
+                con_texto, sin_texto, errs_img = traducir_imagenes(
+                    imagenes, args.modelo_vision,
+                    nombre_origen, nombre_destino,
+                )
+                aplicados = aplicar_captions_imagenes(imagenes)
+                print(f"   Captions agregados: {aplicados}  "
+                      f"(con texto: {con_texto}, sin texto: {sin_texto}, errores: {errs_img})")
+
         if args.fuente or args.tamano_fuente:
             fuente = args.fuente or FUENTE_DEFAULT
             tamano = args.tamano_fuente or TAMANO_FUENTE_DEFAULT

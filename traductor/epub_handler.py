@@ -31,7 +31,8 @@ from bs4 import NavigableString, Tag
 
 from .html_handler import (extraer_nodos_texto, aplicar_traducciones_html, parsear_html,
                            serializar_xhtml, extraer_pagebreaks, reinsertar_pagebreaks,
-                           corregir_bibliorefs)
+                           corregir_bibliorefs, extraer_imagenes_html,
+                           aplicar_captions_imagenes_html, ImagenHTML)
 
 
 @dataclass
@@ -43,6 +44,8 @@ class CapituloEPUB:
     soup: object = None
     # pagebreaks extraídos para reinsertar después de traducir
     pagebreaks: list = field(default_factory=list)
+    # imágenes con texto a traducir (opcional, solo si --traducir-imagenes)
+    imagenes: list = field(default_factory=list)
 
 
 def abrir_epub(ruta: Path) -> epub.EpubBook:
@@ -73,8 +76,50 @@ def aplicar_traducciones_epub(capitulo: CapituloEPUB,
     aplicar_traducciones_html(capitulo.nodos, traducciones)
     if capitulo.pagebreaks:
         reinsertar_pagebreaks(capitulo.pagebreaks)
+    if capitulo.imagenes:
+        aplicar_captions_imagenes_html(capitulo.imagenes)
     xhtml = serializar_xhtml(capitulo.soup)
     return capitulo.item.get_name(), xhtml.encode("utf-8")
+
+
+def _construir_resolver_recurso(book: epub.EpubBook, item_name: str):
+    """Devuelve una función que dado un href relativo del HTML, devuelve los bytes
+    del recurso dentro del EPUB.
+
+    `item_name` es el nombre del item HTML actual (para resolver paths relativos).
+    """
+    item_dir = str(PurePosixPath(item_name).parent)
+
+    def resolver(href: str) -> bytes | None:
+        if not href or href.startswith(("http://", "https://", "data:")):
+            return None
+        # Quitar fragmento si lo hay
+        href_limpio = href.split("#", 1)[0]
+        # Resolver a path absoluto dentro del EPUB
+        if item_dir != ".":
+            ruta_abs = posixpath.normpath(posixpath.join(item_dir, href_limpio))
+        else:
+            ruta_abs = posixpath.normpath(href_limpio)
+        # Buscar el item en el book por su href
+        item = book.get_item_with_href(ruta_abs)
+        if item is None:
+            return None
+        return item.get_content()
+
+    return resolver
+
+
+def extraer_imagenes_epub(book: epub.EpubBook,
+                           capitulos: list[CapituloEPUB]) -> list[ImagenHTML]:
+    """Recorre todos los capítulos y extrae sus imágenes.
+    Setea capitulo.imagenes y devuelve la lista plana para procesamiento.
+    """
+    todas = []
+    for capitulo in capitulos:
+        resolver = _construir_resolver_recurso(book, capitulo.item.get_name())
+        capitulo.imagenes = extraer_imagenes_html(capitulo.soup, resolver)
+        todas.extend(capitulo.imagenes)
+    return todas
 
 
 def guardar_epub(ruta_origen: Path, ruta_salida: Path,

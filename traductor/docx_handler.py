@@ -10,6 +10,7 @@ from docx.shared import Pt, RGBColor
 from docx.text.paragraph import Paragraph
 
 
+
 @dataclass
 class HyperlinkInfo:
     """Info de un hipervínculo dentro de un párrafo."""
@@ -38,6 +39,17 @@ class UnidadTraducible:
     base_rPr: object = None
 
 
+@dataclass
+class ImagenTraducible:
+    """Representa una imagen inline cuyo texto se va a traducir."""
+    parrafo: Paragraph              # párrafo que contiene la imagen
+    run_element: object             # elemento w:r con el w:drawing de la imagen
+    imagen_bytes: bytes
+    ancho_emu: int                  # ancho de la imagen en EMU
+    alineacion_jc: str              # 'left' | 'center' | 'right' (del párrafo padre)
+    traduccion: str | None = None   # se completa después de la pasada de visión
+
+
 def _parrafo_tiene_imagen(parrafo: Paragraph) -> bool:
     """Detecta si un párrafo contiene imágenes inline."""
     for run in parrafo.runs:
@@ -46,6 +58,71 @@ def _parrafo_tiene_imagen(parrafo: Paragraph) -> bool:
         if run._element.findall(qn("w:pict")):
             return True
     return False
+
+
+def _resolver_imagen_blob(parrafo: Paragraph, run_element) -> tuple[bytes, int] | None:
+    """Devuelve (bytes_imagen, ancho_emu) del primer drawing/pict del run, o None."""
+    # Caso 1: w:drawing → wp:inline → a:graphic → a:graphicData → pic:pic → pic:blipFill → a:blip
+    drawing = run_element.find(qn("w:drawing"))
+    if drawing is not None:
+        # Buscar el ancho de wp:extent
+        ancho_emu = 0
+        for tag in (qn("wp:extent"),):
+            extent = drawing.find(f".//{tag}")
+            if extent is not None:
+                try:
+                    ancho_emu = int(extent.get("cx", "0"))
+                except ValueError:
+                    ancho_emu = 0
+                break
+        # Buscar el a:blip con r:embed
+        blip = drawing.find(f".//{qn('a:blip')}")
+        if blip is not None:
+            r_embed = blip.get(qn("r:embed"))
+            if r_embed:
+                try:
+                    image_part = parrafo.part.related_parts[r_embed]
+                    return image_part.blob, ancho_emu
+                except (KeyError, AttributeError):
+                    return None
+
+    # Caso 2: w:pict (legacy VML) — más raro, lo skipeamos por ahora
+    return None
+
+
+def _alineacion_parrafo(parrafo: Paragraph) -> str:
+    """Devuelve 'left' | 'center' | 'right' del párrafo (default 'center' para imágenes)."""
+    pPr = parrafo._element.find(qn("w:pPr"))
+    if pPr is not None:
+        jc = pPr.find(qn("w:jc"))
+        if jc is not None:
+            val = jc.get(qn("w:val"))
+            if val in ("left", "center", "right"):
+                return val
+    # Default razonable para imágenes: centradas
+    return "center"
+
+
+def _extraer_imagenes_de_parrafo(parrafo: Paragraph) -> list[ImagenTraducible]:
+    """Devuelve las imágenes inline del párrafo como ImagenTraducible."""
+    imagenes = []
+    alineacion = _alineacion_parrafo(parrafo)
+    for run in parrafo.runs:
+        run_el = run._element
+        if not (run_el.findall(qn("w:drawing")) or run_el.findall(qn("w:pict"))):
+            continue
+        info = _resolver_imagen_blob(parrafo, run_el)
+        if info is None:
+            continue
+        imagen_bytes, ancho_emu = info
+        if not imagen_bytes:
+            continue
+        imagenes.append(ImagenTraducible(
+            parrafo=parrafo, run_element=run_el,
+            imagen_bytes=imagen_bytes, ancho_emu=ancho_emu,
+            alineacion_jc=alineacion,
+        ))
+    return imagenes
 
 
 def _extraer_texto_con_links(parrafo: Paragraph) -> tuple[str, dict, dict, object]:
@@ -132,24 +209,44 @@ def _extraer_de_parrafos(parrafos: list[Paragraph]) -> list[UnidadTraducible]:
     return unidades
 
 
+def _recorrer_unidades(parrafos, tablas, unidades: list) -> None:
+    """Recorre recursivamente párrafos y tablas (incluyendo anidadas)
+    recolectando unidades de texto traducibles."""
+    unidades.extend(_extraer_de_parrafos(parrafos))
+    for tabla in tablas:
+        for fila in tabla.rows:
+            for celda in fila.cells:
+                _recorrer_unidades(celda.paragraphs, celda.tables, unidades)
+
+
 def extraer_unidades(ruta_docx: Path) -> tuple[Document, list[UnidadTraducible]]:
     """Abre un DOCX y extrae todas las unidades traducibles.
-    Recorre párrafos del cuerpo principal y celdas de tablas.
+    Recursivo: cuerpo principal, tablas, y tablas anidadas dentro de celdas.
     Devuelve (documento, lista_de_unidades).
     """
     doc = Document(str(ruta_docx))
     unidades = []
+    _recorrer_unidades(doc.paragraphs, doc.tables, unidades)
+    return doc, unidades
 
-    # Párrafos del cuerpo
-    unidades.extend(_extraer_de_parrafos(doc.paragraphs))
 
-    # Tablas: cada celda tiene sus propios párrafos
-    for tabla in doc.tables:
+def _recorrer_imagenes(parrafos, tablas, imagenes: list) -> None:
+    """Recorre recursivamente párrafos y tablas (incluyendo anidadas) recolectando imágenes."""
+    for parrafo in parrafos:
+        imagenes.extend(_extraer_imagenes_de_parrafo(parrafo))
+    for tabla in tablas:
         for fila in tabla.rows:
             for celda in fila.cells:
-                unidades.extend(_extraer_de_parrafos(celda.paragraphs))
+                _recorrer_imagenes(celda.paragraphs, celda.tables, imagenes)
 
-    return doc, unidades
+
+def extraer_imagenes(doc: Document) -> list[ImagenTraducible]:
+    """Recorre el documento y devuelve todas las imágenes inline traducibles.
+    Recursivo: cuerpo principal, tablas, y tablas anidadas dentro de celdas.
+    """
+    imagenes = []
+    _recorrer_imagenes(doc.paragraphs, doc.tables, imagenes)
+    return imagenes
 
 
 _LINK_PATTERN = re.compile(r"\u00ab(\d+):(.*?)\u00bb")
@@ -305,3 +402,171 @@ def aplicar_fuente(doc: Document, nombre_fuente: str, tamano: int):
 def guardar_docx(doc: Document, ruta_salida: Path):
     """Guarda el documento DOCX."""
     doc.save(str(ruta_salida))
+
+
+# --- Aplicación de captions traducidos a imágenes ---
+
+# Conversión: 1 dxa (twentieth-of-a-point) = 635 EMU
+_EMU_POR_DXA = 635
+
+
+def _emu_a_dxa(emu: int) -> int:
+    return max(1, emu // _EMU_POR_DXA)
+
+
+def _crear_bordes_invisibles() -> OxmlElement:
+    bordes = OxmlElement("w:tblBorders")
+    for lado in ("top", "left", "bottom", "right", "insideH", "insideV"):
+        b = OxmlElement(f"w:{lado}")
+        b.set(qn("w:val"), "nil")
+        bordes.append(b)
+    return bordes
+
+
+def _crear_celda(ancho_dxa: int) -> OxmlElement:
+    tc = OxmlElement("w:tc")
+    tcPr = OxmlElement("w:tcPr")
+    tcW = OxmlElement("w:tcW")
+    tcW.set(qn("w:w"), str(ancho_dxa))
+    tcW.set(qn("w:type"), "dxa")
+    tcPr.append(tcW)
+    tc.append(tcPr)
+    return tc
+
+
+def _crear_parrafo_caption(texto: str) -> OxmlElement:
+    """Crea un párrafo en cursiva, tamaño 90%, centrado, con el caption."""
+    p = OxmlElement("w:p")
+    pPr = OxmlElement("w:pPr")
+    jc = OxmlElement("w:jc")
+    jc.set(qn("w:val"), "center")
+    pPr.append(jc)
+    # rPr base del párrafo (afecta marcador de fin de párrafo)
+    base_rPr = OxmlElement("w:rPr")
+    i_el = OxmlElement("w:i")
+    base_rPr.append(i_el)
+    sz = OxmlElement("w:sz")
+    sz.set(qn("w:val"), "20")  # 10pt = 20 half-points
+    base_rPr.append(sz)
+    pPr.append(base_rPr)
+    p.append(pPr)
+
+    # Run con el texto
+    r = OxmlElement("w:r")
+    r_rPr = OxmlElement("w:rPr")
+    i2 = OxmlElement("w:i")
+    r_rPr.append(i2)
+    sz2 = OxmlElement("w:sz")
+    sz2.set(qn("w:val"), "20")
+    r_rPr.append(sz2)
+    r.append(r_rPr)
+    t = OxmlElement("w:t")
+    t.text = texto
+    t.set(qn("xml:space"), "preserve")
+    r.append(t)
+    p.append(r)
+    return p
+
+
+def _construir_tabla_imagen_caption(imagen_run_clon, ancho_emu: int,
+                                     alineacion: str, texto_caption: str) -> OxmlElement:
+    """Construye una tabla 1×2 con bordes invisibles: imagen arriba, caption abajo."""
+    ancho_dxa = _emu_a_dxa(ancho_emu) if ancho_emu else 6000
+
+    tbl = OxmlElement("w:tbl")
+    tblPr = OxmlElement("w:tblPr")
+
+    tblW = OxmlElement("w:tblW")
+    tblW.set(qn("w:w"), str(ancho_dxa))
+    tblW.set(qn("w:type"), "dxa")
+    tblPr.append(tblW)
+
+    jc = OxmlElement("w:jc")
+    jc.set(qn("w:val"), alineacion)
+    tblPr.append(jc)
+
+    tblPr.append(_crear_bordes_invisibles())
+
+    tblLayout = OxmlElement("w:tblLayout")
+    tblLayout.set(qn("w:type"), "fixed")
+    tblPr.append(tblLayout)
+
+    tbl.append(tblPr)
+
+    tblGrid = OxmlElement("w:tblGrid")
+    gridCol = OxmlElement("w:gridCol")
+    gridCol.set(qn("w:w"), str(ancho_dxa))
+    tblGrid.append(gridCol)
+    tbl.append(tblGrid)
+
+    # Fila 1: imagen
+    tr1 = OxmlElement("w:tr")
+    tc1 = _crear_celda(ancho_dxa)
+    p1 = OxmlElement("w:p")
+    p1_pPr = OxmlElement("w:pPr")
+    p1_jc = OxmlElement("w:jc")
+    p1_jc.set(qn("w:val"), "center")
+    p1_pPr.append(p1_jc)
+    p1.append(p1_pPr)
+    p1.append(imagen_run_clon)
+    tc1.append(p1)
+    tr1.append(tc1)
+    tbl.append(tr1)
+
+    # Fila 2: caption
+    tr2 = OxmlElement("w:tr")
+    tc2 = _crear_celda(ancho_dxa)
+    tc2.append(_crear_parrafo_caption(texto_caption))
+    tr2.append(tc2)
+    tbl.append(tr2)
+
+    return tbl
+
+
+def _parrafo_solo_tiene_runs_vacios(elem_p) -> bool:
+    """True si el párrafo no contiene runs con texto ni más imágenes."""
+    for r in elem_p.findall(qn("w:r")):
+        # ¿texto?
+        for t in r.findall(qn("w:t")):
+            if (t.text or "").strip():
+                return False
+        # ¿imagen u otra cosa visual?
+        if r.find(qn("w:drawing")) is not None or r.find(qn("w:pict")) is not None:
+            return False
+    return True
+
+
+def aplicar_captions_imagenes(imagenes: list[ImagenTraducible]) -> int:
+    """Para cada imagen con traducción, inserta una tabla 1×2 (imagen + caption)
+    en el lugar de la imagen. Si el párrafo original queda vacío, se elimina.
+
+    Devuelve la cantidad de captions aplicados.
+    """
+    aplicados = 0
+    for img in imagenes:
+        if not img.traduccion:
+            continue
+        elem_p = img.parrafo._element
+        parent = elem_p.getparent()
+        if parent is None:
+            continue
+
+        # Verificar que el run de la imagen sigue dentro del párrafo
+        if img.run_element.getparent() is not elem_p:
+            continue
+
+        run_clon = deepcopy(img.run_element)
+        tbl = _construir_tabla_imagen_caption(
+            run_clon, img.ancho_emu, img.alineacion_jc, img.traduccion,
+        )
+
+        # Sacar el run original del párrafo y poner la tabla justo antes del párrafo
+        elem_p.remove(img.run_element)
+        elem_p.addprevious(tbl)
+
+        # Si el párrafo quedó vacío (caso típico: párrafo era solo la imagen), lo borro
+        if _parrafo_solo_tiene_runs_vacios(elem_p):
+            parent.remove(elem_p)
+
+        aplicados += 1
+    return aplicados

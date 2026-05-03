@@ -6,6 +6,7 @@ import ollama
 from tqdm import tqdm
 
 from .config import REINTENTOS_MAX
+from .image_handler import traducir_imagen
 
 
 def traducir_chunk(texto: str, modelo: str,
@@ -161,3 +162,51 @@ def traducir_chunks(chunks: list[str], modelo: str, pausa: float,
             time.sleep(pausa)
 
     return traducciones, errores, sospechosos
+
+
+def traducir_imagenes(imagenes: list, modelo_vision: str,
+                      nombre_origen: str = "English",
+                      nombre_destino: str = "Spanish") -> tuple[int, int, int]:
+    """Traduce in-place el texto embebido en una lista de imágenes.
+
+    Cada elemento de `imagenes` debe ser un objeto con atributos:
+      - imagen_bytes: bytes
+      - traduccion: str | None  (se setea con la traducción o se deja None)
+
+    Cachea por hash de bytes para no procesar duplicados.
+    Devuelve (procesadas_con_texto, sin_texto, errores).
+    """
+    if not imagenes:
+        return 0, 0, 0
+
+    cache: dict[str, str | None] = {}
+    con_texto = 0
+    sin_texto = 0
+    errores = 0
+
+    with tqdm(total=len(imagenes), unit="img", desc="Imágenes",
+              bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} imgs [{elapsed}<{remaining}]") as barra:
+        for i, img in enumerate(imagenes, 1):
+            for intento in range(1, REINTENTOS_MAX + 1):
+                try:
+                    resultado = traducir_imagen(
+                        img.imagen_bytes, modelo_vision,
+                        nombre_origen, nombre_destino, cache,
+                    )
+                    img.traduccion = resultado
+                    if resultado is None:
+                        sin_texto += 1
+                    else:
+                        con_texto += 1
+                    break
+                except Exception as e:
+                    if intento < REINTENTOS_MAX:
+                        tqdm.write(f"⚠️  Imagen {i} error (intento {intento}): {e}. Reintentando...")
+                        time.sleep(2)
+                    else:
+                        tqdm.write(f"❌ Imagen {i} falló tras {REINTENTOS_MAX} intentos. Se omite.")
+                        img.traduccion = None
+                        errores += 1
+            barra.update(1)
+
+    return con_texto, sin_texto, errores

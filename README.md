@@ -33,6 +33,9 @@ pip install -r requirements.txt
 
 # Descargar el modelo de traduccion (primera vez)
 ollama pull translategemma:12b
+
+# Opcional: descargar el modelo de vision para --traducir-imagenes
+ollama pull qwen2.5vl:7b
 ```
 
 ## Uso
@@ -65,6 +68,8 @@ python traductor-de-textos.py pagina.html --de-idioma en --a-idioma es
 | `--actualizar-modelo` | Verificar si hay una version mas nueva del modelo en Ollama |
 | `--revisar` | EPUB: exportar capitulos traducidos como HTML para revision manual |
 | `--desde-revision CARPETA` | EPUB: generar EPUB final desde HTMLs corregidos manualmente |
+| `--traducir-imagenes` | Tambien traducir el texto dentro de las imagenes (OCR + traduccion via modelo de vision). Agrega la traduccion como caption debajo de cada imagen con texto. |
+| `--modelo-vision MODELO` | Modelo Ollama de vision para `--traducir-imagenes` (default: `qwen2.5vl:7b`) |
 
 ## Ejemplos
 
@@ -83,6 +88,9 @@ python traductor-de-textos.py --actualizar-modelo
 
 # Usar un modelo diferente
 python traductor-de-textos.py documento.docx --modelo gemma3:12b
+
+# Traducir tambien el texto que aparece dentro de las imagenes
+python traductor-de-textos.py informe.docx --de-idioma en --a-idioma es --traducir-imagenes
 ```
 
 ## Notas
@@ -92,3 +100,4 @@ python traductor-de-textos.py documento.docx --modelo gemma3:12b
 - Los archivos EPUB preservan imagenes, estilos y estructura de capitulos.
 - Para HTML, las imagenes se redimensionan al 75% del ancho de pagina en el DOCX resultante.
 - Al mover o renombrar la carpeta del proyecto, hay que recrear el `venv` (`python3 -m venv venv`).
+- `--traducir-imagenes` agrega ~3-5 segundos por imagen y requiere el modelo de vision `qwen2.5vl:7b` (~6 GB). El caption se inserta debajo de cada imagen, ajustado a su ancho y alineacion. Algunas imagenes con texto fino (graficos de linea con etiquetas chicas) pueden no ser detectadas — en ese caso no se agrega caption.

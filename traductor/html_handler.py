@@ -13,14 +13,27 @@ Flujo:
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 
 from bs4 import BeautifulSoup, NavigableString, Tag, ProcessingInstruction
+
 
 # Etiquetas cuyo contenido no se traduce
 _ETIQUETAS_SKIP = {
     "script", "style", "code", "pre", "kbd", "samp", "var",
     "math", "svg", "head",
 }
+
+# Atributo que marca un caption insertado por nosotros (para skipear en re-corridas)
+_ATTR_CAPTION_TRADUCIDO = "data-translated-caption"
+
+
+@dataclass
+class ImagenHTML:
+    """Representa una imagen del HTML/EPUB cuyo texto se va a traducir."""
+    img_tag: Tag                    # el <img> original
+    imagen_bytes: bytes
+    traduccion: str | None = None
 
 
 def _en_etiqueta_skip(nodo: NavigableString) -> bool:
@@ -33,6 +46,9 @@ def _en_etiqueta_skip(nodo: NavigableString) -> bool:
             if nombre in _ETIQUETAS_SKIP:
                 return True
             if nombre == "a" and padre.get("role") == "doc-biblioref":
+                return True
+            # Captions insertados por nosotros en corridas previas
+            if padre.get(_ATTR_CAPTION_TRADUCIDO) == "1":
                 return True
         padre = padre.parent
     return False
@@ -277,6 +293,100 @@ _VOID_ELEMENTS = {
 
 _XML_DECL = '<?xml version="1.0" encoding="utf-8"?>'
 _XHTML_NS = 'xmlns="http://www.w3.org/1999/xhtml"'
+
+
+# --- Imágenes: extracción y aplicación de captions ---
+
+def extraer_imagenes_html(soup: BeautifulSoup,
+                          resolver_recurso) -> list[ImagenHTML]:
+    """Devuelve lista de ImagenHTML para cada <img> del documento.
+
+    `resolver_recurso(href: str) -> bytes | None` debe resolver el src/href de
+    la imagen (relativo o absoluto al recurso) y devolver los bytes. Si el href
+    es externo (http://...) o no se encuentra, devolver None.
+    """
+    imagenes = []
+    for img in soup.find_all("img"):
+        if not isinstance(img, Tag):
+            continue
+        src = img.get("src")
+        if not src or src.startswith(("http://", "https://", "data:")):
+            continue
+        try:
+            blob = resolver_recurso(src)
+        except Exception:
+            blob = None
+        if not blob:
+            continue
+        imagenes.append(ImagenHTML(img_tag=img, imagen_bytes=blob))
+    return imagenes
+
+
+def _soup_de(tag: Tag) -> BeautifulSoup:
+    """Sube por los ancestros hasta encontrar el BeautifulSoup raíz."""
+    nodo = tag
+    while nodo.parent is not None:
+        nodo = nodo.parent
+        if isinstance(nodo, BeautifulSoup):
+            return nodo
+    # Fallback (no debería pasar): crear un soup vacío para new_tag
+    return BeautifulSoup("", "html.parser")
+
+
+def _envolver_o_anexar_caption(img_tag: Tag, texto_caption: str) -> None:
+    """Inserta el caption en la posición y ancho de la imagen.
+
+    Casos:
+    - Si el <img> NO está dentro de un <figure>: lo envuelve en <figure
+      style="display:table; margin:0 auto;"> + <figcaption caption-side:bottom>.
+    - Si está en un <figure> sin <figcaption>: agrega <figcaption>.
+    - Si el <figure> ya tiene <figcaption>: agrega un <figcaption> adicional
+      marcado con data-translated-caption="1" para distinguirlo.
+    """
+    soup = _soup_de(img_tag)
+
+    figure_padre = img_tag.find_parent("figure")
+
+    if figure_padre is None:
+        # Envolver imagen + figcaption en un figure que tome el ancho de la imagen
+        figure = soup.new_tag("figure")
+        figure["style"] = "display: table; margin: 0 auto;"
+        # Insertar figure en el lugar del img y mover el img adentro
+        img_tag.insert_before(figure)
+        figure.append(img_tag.extract())
+        figcaption = soup.new_tag("figcaption")
+        figcaption["class"] = "img-caption-translated"
+        figcaption[_ATTR_CAPTION_TRADUCIDO] = "1"
+        figcaption["style"] = ("caption-side: bottom; display: table-caption; "
+                                "text-align: center; font-style: italic; "
+                                "font-size: 0.9em; padding-top: 0.3em;")
+        figcaption.string = texto_caption
+        figure.append(figcaption)
+    else:
+        # Ya hay figure: agregar figcaption (al final del figure)
+        figcaption = soup.new_tag("figcaption")
+        figcaption["class"] = "img-caption-translated"
+        figcaption[_ATTR_CAPTION_TRADUCIDO] = "1"
+        figcaption["style"] = ("caption-side: bottom; text-align: center; "
+                                "font-style: italic; font-size: 0.9em; "
+                                "padding-top: 0.3em;")
+        figcaption.string = texto_caption
+        figure_padre.append(figcaption)
+
+
+def aplicar_captions_imagenes_html(imagenes: list[ImagenHTML]) -> int:
+    """Para cada imagen con traducción, inserta el caption ajustado al ancho/posición.
+    Devuelve la cantidad de captions aplicados.
+    """
+    aplicados = 0
+    for img in imagenes:
+        if not img.traduccion:
+            continue
+        if img.img_tag.parent is None:
+            continue
+        _envolver_o_anexar_caption(img.img_tag, img.traduccion)
+        aplicados += 1
+    return aplicados
 
 
 def serializar_xhtml(soup: BeautifulSoup) -> str:
