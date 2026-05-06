@@ -171,6 +171,17 @@ def main():
     # Modo solo actualización de modelo (sin archivo de entrada)
     if args.actualizar_modelo and not args.entrada:
         verificar_modelo(args.modelo, actualizar=True)
+        # Modelo de visión: solo si ya está local (no forzar pull de ~6 GB)
+        try:
+            modelos_locales = [m.model for m in ollama.list().models]
+            vision_base = args.modelo_vision.split(":")[0]
+            if any(vision_base in m for m in modelos_locales):
+                verificar_modelo(args.modelo_vision, actualizar=True)
+            else:
+                print(f"\nℹ️  Modelo de visión '{args.modelo_vision}' no instalado, se omite.")
+                print(f"   Para instalarlo: ollama pull {args.modelo_vision}")
+        except Exception:
+            pass  # ya se reportó el error de conexión arriba
         return
 
     if not args.entrada:
