@@ -93,6 +93,41 @@ python traductor-de-textos.py documento.docx --modelo gemma3:12b
 python traductor-de-textos.py informe.docx --de-idioma en --a-idioma es --traducir-imagenes
 ```
 
+## Optimizar Ollama (opcional)
+
+Para acelerar la inferencia y reducir el consumo de memoria, conviene activar Flash Attention y la cuantizacion del KV cache a nivel del servidor de Ollama. Aplica tanto al modelo de traduccion como al de vision.
+
+Si se lanza Ollama desde terminal con `ollama serve`, agregar a `~/.zshrc`:
+
+```bash
+export OLLAMA_FLASH_ATTENTION=1
+export OLLAMA_KV_CACHE_TYPE=q8_0
+export OLLAMA_KEEP_ALIVE=30m
+```
+
+Despues, `source ~/.zshrc` y reiniciar `ollama serve`.
+
+Si se usa la app de Ollama (icono en la barra de menu) en lugar de `ollama serve`, las mismas variables se setean con `launchctl setenv NOMBRE valor` y luego salir/volver a abrir la app. Se pierden al reiniciar la Mac; para que sean permanentes, agregarlas a un LaunchAgent.
+
+Que hace cada una:
+
+- `OLLAMA_FLASH_ATTENTION=1` — atencion mas eficiente en memoria; mejora notable en contextos largos (modelo de vision).
+- `OLLAMA_KV_CACHE_TYPE=q8_0` — cuantiza el KV cache a 8 bits y libera ~50% de memoria. Solo tiene efecto si Flash Attention esta activo. Critico en Macs con RAM justa cuando se usan los dos modelos a la vez.
+- `OLLAMA_KEEP_ALIVE=30m` — mantiene el modelo cargado en memoria entre llamadas. Sin esto, Ollama puede descargarlo y recargarlo, agregando 10-30 s de pausa por switch.
+
+Para verificar que se aplicaron, en `~/.ollama/logs/server.log` deberia figurar `flash_attention = 1` al cargar el modelo.
+
+### Macs con poca RAM y `--traducir-imagenes`
+
+Con 16-18 GB de RAM, mantener `translategemma:12b` y `qwen2.5vl:7b` cargados a la vez deja muy poco margen y Ollama termina alternando entre ambos. Una alternativa es usar el modelo de vision mas chico:
+
+```bash
+ollama pull qwen2.5vl:3b
+python traductor-de-textos.py informe.docx --traducir-imagenes --modelo-vision qwen2.5vl:3b
+```
+
+Para detectar y traducir texto en imagenes suele alcanzar y deja los dos modelos hot en paralelo.
+
 ## Notas
 
 - La traduccion se ejecuta completamente en local via Ollama, sin enviar datos a servicios externos.
