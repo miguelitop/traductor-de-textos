@@ -110,6 +110,36 @@ def verificar_modelo(modelo: str, actualizar: bool = False):
             print(f"   ✅ '{modelo}' ya está en la última versión.")
 
 
+USO = """\
+Traductor de documentos (Ollama)
+================================
+
+Uso:
+    python traductor-de-textos.py <archivo> [opciones]
+
+Formatos soportados: DOCX, PDF, RTF, DOC, ODT, EPUB, HTML
+
+Ejemplos:
+    python traductor-de-textos.py libro.docx
+        → selector interactivo de idiomas
+
+    python traductor-de-textos.py libro.epub --de-idioma en --a-idioma es
+        → inglés → español (sin selector)
+
+    python traductor-de-textos.py libro.pdf --de-idioma fr --a-idioma de
+        → francés → alemán
+
+    python traductor-de-textos.py libro.docx --traducir-imagenes
+        → además traduce el texto dentro de las imágenes
+
+    python traductor-de-textos.py --actualizar-modelo
+        → solo verifica/actualiza el modelo de Ollama
+
+Para ver todas las opciones:
+    python traductor-de-textos.py --help
+"""
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Traduce documentos entre idiomas usando Ollama"
@@ -166,6 +196,11 @@ def main():
         help=f"Modelo Ollama de visión a usar con --traducir-imagenes "
              f"(default: {MODELO_VISION_DEFAULT})"
     )
+    # Sin ningún argumento: mostrar uso y salir
+    if len(sys.argv) == 1:
+        print(USO)
+        sys.exit(0)
+
     args = parser.parse_args()
 
     # Modo solo actualización de modelo (sin archivo de entrada)
@@ -185,7 +220,9 @@ def main():
         return
 
     if not args.entrada:
-        parser.error("se requiere un archivo de entrada (o usar --actualizar-modelo solo)")
+        print("❌ Falta el archivo de entrada (o usá --actualizar-modelo solo).\n")
+        print(USO)
+        sys.exit(1)
 
     # Normalizar paths según el entorno (Windows ↔ WSL) antes de usarlos
     args.entrada = normalizar_path_entrada(args.entrada)
