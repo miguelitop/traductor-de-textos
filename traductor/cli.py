@@ -32,7 +32,7 @@ except ImportError:
 from .config import (MODELO_DEFAULT, CHUNK_PALABRAS, PAUSA_ENTRE_CHUNKS,
                      FUENTE_DEFAULT, TAMANO_FUENTE_DEFAULT, MODELO_VISION_DEFAULT)
 from .chunker import dividir_en_chunks
-from .converter import convertir_a_docx, convertir_con_calibre
+from .converter import convertir_a_docx, convertir_con_calibre, normalizar_path_entrada
 from .docx_handler import (extraer_unidades, aplicar_traducciones, aplicar_fuente,
                            guardar_docx, extraer_imagenes, aplicar_captions_imagenes)
 from .epub_handler import (abrir_epub, extraer_capitulos, aplicar_traducciones_epub, guardar_epub,
@@ -186,6 +186,11 @@ def main():
 
     if not args.entrada:
         parser.error("se requiere un archivo de entrada (o usar --actualizar-modelo solo)")
+
+    # Normalizar paths según el entorno (Windows ↔ WSL) antes de usarlos
+    args.entrada = normalizar_path_entrada(args.entrada)
+    args.salida = normalizar_path_entrada(args.salida)
+    args.desde_revision = normalizar_path_entrada(args.desde_revision)
 
     ruta_entrada = Path(args.entrada)
     if not ruta_entrada.exists():

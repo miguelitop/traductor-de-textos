@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -16,6 +17,33 @@ def _es_wsl() -> bool:
             return "microsoft" in f.read().lower()
     except OSError:
         return False
+
+
+_PATRON_WIN = re.compile(r"^([A-Za-z]):[\\/](.*)$")
+_PATRON_WSL_MNT = re.compile(r"^/mnt/([a-zA-Z])/(.*)$")
+
+
+def normalizar_path_entrada(ruta: str | None) -> str | None:
+    """Normaliza una ruta para que funcione en el entorno actual.
+    En WSL, convierte rutas estilo Windows (C:\\... o C:/...) a /mnt/c/...
+    En Windows nativo, convierte rutas estilo WSL (/mnt/c/...) a C:\\...
+    Si la ruta ya está en el formato correcto, la devuelve tal cual.
+    """
+    if not ruta:
+        return ruta
+    if _es_wsl():
+        m = _PATRON_WIN.match(ruta)
+        if m:
+            letra = m.group(1).lower()
+            resto = m.group(2).replace("\\", "/")
+            return f"/mnt/{letra}/{resto}"
+    elif platform.system() == "Windows":
+        m = _PATRON_WSL_MNT.match(ruta)
+        if m:
+            letra = m.group(1).upper()
+            resto = m.group(2).replace("/", "\\")
+            return f"{letra}:\\{resto}"
+    return ruta
 
 
 
