@@ -31,7 +31,6 @@ except ImportError:
 
 from .config import (MODELO_DEFAULT, CHUNK_PALABRAS, PAUSA_ENTRE_CHUNKS,
                      FUENTE_DEFAULT, TAMANO_FUENTE_DEFAULT, MODELO_VISION_DEFAULT)
-from .chunker import dividir_en_chunks
 from .converter import convertir_a_docx, convertir_con_calibre, normalizar_path_entrada
 from .docx_handler import (extraer_unidades, aplicar_traducciones, aplicar_fuente,
                            guardar_docx, extraer_imagenes, aplicar_captions_imagenes)
@@ -485,29 +484,38 @@ def main():
             sys.exit(1)
 
         textos = [u.texto for u in unidades]
-        texto_completo = "\n".join(textos)
-        total_palabras = len(texto_completo.split())
-        chunks = dividir_en_chunks(texto_completo, args.chunk_palabras)
+        total_palabras = sum(len(t.split()) for t in textos)
+        # Agrupar unidades en chunks con separadores ||||, igual que el path EPUB/HTML.
+        # Es mucho más robusto que partir por \n: separar_grupo fuerza la cantidad
+        # exacta de unidades por grupo, evitando la desalineación que se produce
+        # cuando el modelo fusiona o parte párrafos.
+        grupos = agrupar_nodos(textos, args.chunk_palabras)
+        chunks = [juntar_grupo(textos, g) for g in grupos]
 
         print(f"   {total_palabras:,} palabras → {len(chunks)} chunks de ~{args.chunk_palabras} palabras c/u")
         tiempo_estimado = len(chunks) * 10
         mins = tiempo_estimado // 60
         print(f"   Tiempo estimado: ~{mins} minutos\n")
 
-        traducciones, errores, sospechosos = traducir_chunks(chunks, args.modelo, PAUSA_ENTRE_CHUNKS,
+        traducciones_chunks, errores, sospechosos = traducir_chunks(chunks, args.modelo, PAUSA_ENTRE_CHUNKS,
                                                     idioma_origen, idioma_destino,
                                                     nombre_origen, nombre_destino)
 
-        texto_traducido = "\n".join(traducciones)
-        parrafos_traducidos = [p.strip() for p in texto_traducido.split("\n") if p.strip()]
+        # Desagrupar para recuperar correspondencia 1:1 con las unidades
+        traducciones = []
+        for traduccion, grupo in zip(traducciones_chunks, grupos):
+            traducciones.extend(separar_grupo(traduccion, len(grupo)))
 
         for i, unidad in enumerate(unidades):
-            if i < len(parrafos_traducidos):
-                unidad.traduccion = parrafos_traducidos[i]
+            if i < len(traducciones):
+                unidad.traduccion = traducciones[i]
             else:
                 unidad.traduccion = unidad.texto
 
-        aplicar_traducciones(unidades)
+        fallbacks_links = aplicar_traducciones(unidades)
+        if fallbacks_links:
+            print(f"   ⚠️  {fallbacks_links} párrafo(s) quedaron sin traducir para no "
+                  f"romper sus hipervínculos/notas (el modelo alteró los tokens).")
 
         # Traducción de texto en imágenes (opt-in)
         if args.traducir_imagenes:
