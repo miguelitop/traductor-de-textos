@@ -18,6 +18,7 @@ class HyperlinkInfo:
     r_id: str
     anchor: str = ""
     rPr: object = None
+    texto: str = ""  # texto visible original del link (se reinserta tal cual)
 
 
 @dataclass
@@ -126,16 +127,24 @@ def _extraer_imagenes_de_parrafo(parrafo: Paragraph) -> list[ImagenTraducible]:
 
 
 def _extraer_texto_con_links(parrafo: Paragraph) -> tuple[str, dict, dict, object]:
-    """Extrae texto del párrafo con marcadores para hipervínculos y notas.
+    """Extrae texto del párrafo con tokens opacos para hipervínculos y notas.
 
-    Marcadores: «N:texto» para links, «FN:id» / «EN:id» para notas.
-    Retorna (texto_con_marcadores, {indice: HyperlinkInfo}, {indice: NotaInfo}, rPr_base).
+    Cada hipervínculo o nota se reemplaza por un token opaco ⟦N⟧ que el modelo
+    solo tiene que arrastrar sin tocar (no traduce nada dentro). El texto visible
+    del link NO se manda al modelo: se guarda en el HyperlinkInfo y se reinserta
+    tal cual el original al reconstruir. Es mucho más robusto que embeber el texto
+    en el marcador, porque los modelos locales rompen los delimitadores cuando
+    tienen que traducir texto adentro.
+
+    El contador es único para links y notas (comparten numeración) para que los
+    índices nunca colisionen.
+
+    Retorna (texto_con_tokens, {indice: HyperlinkInfo}, {indice: NotaInfo}, rPr_base).
     """
     elem = parrafo._element
     link_map = {}
     nota_map = {}
-    link_counter = 0
-    nota_counter = 0
+    contador = 0
     text_parts = []
     base_rPr = None
 
@@ -148,14 +157,13 @@ def _extraer_texto_con_links(parrafo: Paragraph) -> tuple[str, dict, dict, objec
                 ref_elem = fn_ref if fn_ref is not None else en_ref
                 tipo = "footnote" if fn_ref is not None else "endnote"
                 nota_id = ref_elem.get(qn("w:id"), "")
-                nota_counter += 1
+                contador += 1
                 nota_rPr = child.find(qn("w:rPr"))
-                nota_map[nota_counter] = NotaInfo(
+                nota_map[contador] = NotaInfo(
                     tipo=tipo, nota_id=nota_id,
                     rPr=deepcopy(nota_rPr) if nota_rPr is not None else None,
                 )
-                prefijo = "FN" if tipo == "footnote" else "EN"
-                text_parts.append(f"\u00ab{prefijo}:{nota_counter}\u00bb")
+                text_parts.append(_token(contador))
             else:
                 for t_elem in child.findall(qn("w:t")):
                     text_parts.append(t_elem.text or "")
@@ -165,7 +173,7 @@ def _extraer_texto_con_links(parrafo: Paragraph) -> tuple[str, dict, dict, objec
                     base_rPr = deepcopy(rPr)
 
         elif child.tag == qn("w:hyperlink"):
-            link_counter += 1
+            contador += 1
             r_id = child.get(qn("r:id"), "")
             anchor = child.get(qn("w:anchor"), "")
             url = ""
@@ -185,10 +193,10 @@ def _extraer_texto_con_links(parrafo: Paragraph) -> tuple[str, dict, dict, objec
                     if found is not None:
                         link_rPr = deepcopy(found)
 
-            link_map[link_counter] = HyperlinkInfo(
-                url=url, r_id=r_id, anchor=anchor, rPr=link_rPr,
+            link_map[contador] = HyperlinkInfo(
+                url=url, r_id=r_id, anchor=anchor, rPr=link_rPr, texto=link_text,
             )
-            text_parts.append(f"\u00ab{link_counter}:{link_text}\u00bb")
+            text_parts.append(_token(contador))
 
     return "".join(text_parts).strip(), link_map, nota_map, base_rPr
 
@@ -249,10 +257,14 @@ def extraer_imagenes(doc: Document) -> list[ImagenTraducible]:
     return imagenes
 
 
-_LINK_PATTERN = re.compile(r"\u00ab(\d+):(.*?)\u00bb")
-_NOTA_PATTERN = re.compile(r"\u00ab(FN|EN):(\d+)\u00bb")
-# Patrón que encuentra cualquier marcador (link o nota)
-_CUALQUIER_MARCADOR = re.compile(r"\u00ab(?:\d+:.*?|(?:FN|EN):\d+)\u00bb")
+# Token opaco que representa un hipervínculo o nota. Los corchetes matemáticos
+# ⟦ ⟧ no aparecen en texto real y el modelo los arrastra sin tocarlos
+# porque no tiene que traducir nada adentro (solo un número).
+_TOKEN_PATTERN = re.compile(r"⟦(\d+)⟧")
+
+
+def _token(idx: int) -> str:
+    return f"⟦{idx}⟧"
 
 
 def _crear_run_element(texto: str, rPr: object = None) -> OxmlElement:
@@ -312,54 +324,59 @@ def _reconstruir_parrafo(parrafo: Paragraph, texto: str,
         if child.tag != qn("w:pPr"):
             elem.remove(child)
 
-    # Procesar texto: partir por marcadores y reconstruir secuencialmente
+    # Procesar texto: partir por tokens ⟦N⟧ y reconstruir secuencialmente
     last_end = 0
-    for match in _CUALQUIER_MARCADOR.finditer(texto):
-        # Texto plano antes del marcador
+    for match in _TOKEN_PATTERN.finditer(texto):
+        # Texto plano antes del token
         plain = texto[last_end:match.start()]
         if plain:
             elem.append(_crear_run_element(plain, base_rPr))
         last_end = match.end()
 
-        marcador = match.group()
+        idx = int(match.group(1))
 
-        # ¿Es un link?
-        link_match = _LINK_PATTERN.match(marcador)
-        if link_match:
-            link_idx = int(link_match.group(1))
-            link_text = link_match.group(2)
-            if link_idx in link_map:
-                info = link_map[link_idx]
-                hl_el = OxmlElement("w:hyperlink")
-                if info.r_id:
-                    hl_el.set(qn("r:id"), info.r_id)
-                if info.anchor:
-                    hl_el.set(qn("w:anchor"), info.anchor)
-                link_rPr = info.rPr if info.rPr is not None else base_rPr
-                link_run = _crear_run_element(link_text, link_rPr)
-                _aplicar_estilo_link(link_run)
-                hl_el.append(link_run)
-                elem.append(hl_el)
-            else:
-                elem.append(_crear_run_element(link_text, base_rPr))
-            continue
-
+        # ¿Es un link? Se reinserta con su texto visible ORIGINAL (no traducido).
+        if idx in link_map:
+            info = link_map[idx]
+            hl_el = OxmlElement("w:hyperlink")
+            if info.r_id:
+                hl_el.set(qn("r:id"), info.r_id)
+            if info.anchor:
+                hl_el.set(qn("w:anchor"), info.anchor)
+            link_rPr = info.rPr if info.rPr is not None else base_rPr
+            link_run = _crear_run_element(info.texto, link_rPr)
+            _aplicar_estilo_link(link_run)
+            hl_el.append(link_run)
+            elem.append(hl_el)
         # ¿Es una nota?
-        nota_match = _NOTA_PATTERN.match(marcador)
-        if nota_match:
-            nota_idx = int(nota_match.group(2))
-            if nota_idx in nota_map:
-                elem.append(_crear_run_nota(nota_map[nota_idx]))
+        elif idx in nota_map:
+            elem.append(_crear_run_nota(nota_map[idx]))
+        # Token desconocido: se ignora (no debería pasar; la validación previa
+        # en aplicar_traducciones evita reconstruir párrafos con tokens rotos).
 
-    # Texto plano restante después del último marcador
+    # Texto plano restante después del último token
     if last_end < len(texto):
         remaining = texto[last_end:]
         if remaining:
             elem.append(_crear_run_element(remaining, base_rPr))
 
 
-def aplicar_traducciones(unidades: list[UnidadTraducible]):
-    """Reescribe los párrafos con las traducciones, preservando hipervínculos y notas."""
+def _tokens_intactos(unidad: UnidadTraducible) -> bool:
+    """True si la traducción conserva exactamente los tokens ⟦N⟧ esperados
+    (cada uno una vez, sin faltantes ni sobrantes)."""
+    esperados = set(unidad.hyperlinks) | set(unidad.notas)
+    encontrados = [int(n) for n in _TOKEN_PATTERN.findall(unidad.traduccion)]
+    return sorted(encontrados) == sorted(esperados)
+
+
+def aplicar_traducciones(unidades: list[UnidadTraducible]) -> int:
+    """Reescribe los párrafos con las traducciones, preservando hipervínculos y notas.
+
+    Devuelve la cantidad de párrafos que quedaron sin traducir porque el modelo
+    rompió los tokens ⟦N⟧ (fallback: se deja el original con sus links intactos,
+    en vez de escupir basura o perder referencias).
+    """
+    fallbacks = 0
     for unidad in unidades:
         if not unidad.traduccion:
             continue
@@ -367,18 +384,31 @@ def aplicar_traducciones(unidades: list[UnidadTraducible]):
         parrafo = unidad.parrafo
 
         if unidad.hyperlinks or unidad.notas:
+            # Red de seguridad: si el modelo rompió los tokens, no reconstruimos
+            # (dejaríamos links perdidos o marcadores crudos visibles). Preferimos
+            # dejar el párrafo original, con sus hipervínculos y notas intactos.
+            if not _tokens_intactos(unidad):
+                fallbacks += 1
+                continue
             _reconstruir_parrafo(
                 parrafo, unidad.traduccion,
                 unidad.hyperlinks, unidad.notas, unidad.base_rPr,
             )
         else:
-            # Sin hipervínculos ni notas: lógica original (más segura, preserva formato)
+            # Sin hipervínculos ni notas: lógica original (más segura, preserva formato).
+            # Limpiar tokens ⟦N⟧ que el modelo pueda haber desplazado hasta acá desde
+            # un párrafo vecino: en un párrafo sin links no significan nada y quedarían
+            # como basura visible.
+            texto = _TOKEN_PATTERN.sub("", unidad.traduccion)
+            texto = re.sub(r"  +", " ", texto).strip()
             runs = parrafo.runs
             if not runs:
                 continue
-            runs[0].text = unidad.traduccion
+            runs[0].text = texto
             for run in runs[1:]:
                 run.text = ""
+
+    return fallbacks
 
 
 def _aplicar_fuente_parrafos(parrafos: list[Paragraph], nombre_fuente: str,

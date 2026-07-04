@@ -14,11 +14,12 @@ def traducir_chunk(texto: str, modelo: str,
                    nombre_origen: str = "English", nombre_destino: str = "Spanish") -> str:
     """Envía un chunk a Ollama y devuelve la traducción."""
     instruccion_links = ""
-    if "\u00ab" in texto and "\u00bb" in texto:
+    if "\u27e6" in texto:
         instruccion_links = (
-            "IMPORTANT: The text contains hyperlink markers in the format \u00abN:text\u00bb. "
-            "You MUST preserve these markers exactly, translating only the text between "
-            f"the colon and the closing \u00bb. Never remove, reorder, or alter the marker numbers. "
+            "IMPORTANT: The text contains placeholder tokens like \u27e61\u27e7, \u27e62\u27e7, \u27e63\u27e7. "
+            "Each token stands for a hyperlink or footnote. You MUST keep every token EXACTLY "
+            "as-is (same brackets and number), in the same position relative to the surrounding words. "
+            "Never translate, alter, space out, reorder, split, merge, or remove any token. "
         )
     instruccion_separador = ""
     if "||||" in texto:
