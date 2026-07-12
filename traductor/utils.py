@@ -4,10 +4,13 @@ Windows ↔ WSL, y helpers para ejecutables entre sistemas.
 """
 from __future__ import annotations
 
+import concurrent.futures
 import platform
 import re
 import subprocess
 from pathlib import Path
+
+import ollama
 
 
 def _es_wsl() -> bool:
@@ -67,3 +70,25 @@ def _ruta_para_exe(ruta: Path, exe_es_windows: bool) -> str:
     if resultado.returncode == 0:
         return resultado.stdout.strip()
     return str(ruta)
+
+
+def ollama_chat_timeout(*args, timeout_secs=180, fallback_timeout=300, **kwargs):
+    """Wrapper para ollama.chat con timeout.
+
+    Intenta timeout nativo de la librería; si falla (TypeError),
+    usa concurrent.futures.ThreadPoolExecutor como fallback.
+    Convierte excepciones de timeout en Exception para reintentos.
+    """
+    try:
+        try:
+            return ollama.chat(*args, timeout=timeout_secs, **kwargs)
+        except TypeError:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(lambda: ollama.chat(*args, **kwargs))
+                return future.result(timeout=fallback_timeout)
+    except Exception as exc:
+        if "Timeout" in type(exc).__name__:
+            raise Exception(
+                f"Timeout: Ollama no respondió tras {timeout_secs}s"
+            ) from exc
+        raise

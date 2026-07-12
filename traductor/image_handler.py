@@ -17,10 +17,11 @@ import re
 from collections import Counter
 
 import ollama
-import concurrent.futures
 from PIL import Image
 
-from .config import (DIM_MIN_IMAGEN, SENTINEL_SIN_TEXTO)
+from .utils import ollama_chat_timeout
+
+DIM_MIN_IMAGEN = 100  # px mínimos por lado para considerar una imagen
 
 
 def _hash_imagen(imagen_bytes: bytes) -> str:
@@ -40,60 +41,18 @@ def _es_descartable(imagen_bytes: bytes) -> bool:
 
 def _construir_prompt(nombre_origen: str, nombre_destino: str) -> str:
     return (
-        f"You are a professional {nombre_origen} to {nombre_destino} translator "
-        "working on text embedded in images (charts, diagrams, screenshots, "
-        "infographics).\n\n"
-        "Look at the attached image and:\n"
-        f"1. If the image contains NO readable text at all (a pure photograph, "
-        f"an icon, a decorative ornament), respond with exactly: {SENTINEL_SIN_TEXTO}\n"
-        "2. Otherwise, transcribe ALL visible text — including chart titles, "
-        "axis labels, series labels, legends, captions, source notes, "
-        f"annotations — and translate it to {nombre_destino}.\n\n"
-        "Rules for the output:\n"
-        f"- Output ONLY the {nombre_destino} translation.\n"
-        f"- No explanations, no original {nombre_origen} text, no quotes, no markdown.\n"
-        "- Use one line per distinct text element. Group related elements "
-        "(e.g. all axis labels together) on consecutive lines.\n"
-        "- Do NOT repeat the same line. If a label appears once, translate it once.\n"
+        f"Translate all visible text in this image from {nombre_origen} to {nombre_destino}. "
+        "Output ONLY the translation, one line per distinct text element. "
+        "If the image contains NO readable text, respond with an empty string."
     )
-
-
-_OPCIONES_VISION = {
-    "temperature": 0.1,
-    "repeat_penalty": 1.3,
-    "repeat_last_n": 128,
-    "num_predict": 1024,
-}
-
-
-def _ollama_chat_timeout(*args, timeout_secs=180, fallback_timeout=300, **kwargs):
-    """Wrapper para ollama.chat con timeout.
-
-    Intenta timeout nativo de la librería; si falla (TypeError),
-    usa concurrent.futures.ThreadPoolExecutor como fallback.
-    Convierte excepciones de timeout en Exception para reintentos.
-    """
-    try:
-        try:
-            return ollama.chat(*args, timeout=timeout_secs, **kwargs)
-        except TypeError:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(lambda: ollama.chat(*args, **kwargs))
-                return future.result(timeout=fallback_timeout)
-    except Exception as exc:
-        if "Timeout" in type(exc).__name__:
-            raise Exception(
-                f"Timeout: Ollama no respondió tras {timeout_secs}s"
-            ) from exc
-        raise
 
 
 def _llamar_vision(imagen_bytes: bytes, modelo: str, prompt: str) -> str:
     """Una llamada a Ollama-vision. Devuelve el texto crudo del modelo."""
-    response = _ollama_chat_timeout(
+    response = ollama_chat_timeout(
         model=modelo,
         messages=[{"role": "user", "content": prompt, "images": [imagen_bytes]}],
-        options=_OPCIONES_VISION,
+        options={"temperature": 0.1, "num_predict": 1024},
     )
     return response["message"]["content"].strip()
 
@@ -165,8 +124,8 @@ def traducir_imagen(imagen_bytes: bytes, modelo: str,
     prompt = _construir_prompt(nombre_origen, nombre_destino)
     crudo = _llamar_vision(imagen_bytes, modelo, prompt)
 
-    # Sentinel explícito de "sin texto"
-    if crudo.strip().startswith(SENTINEL_SIN_TEXTO):
+    # Resultado vacío → sin texto
+    if not crudo.strip():
         if cache is not None:
             cache[h] = None
         return None

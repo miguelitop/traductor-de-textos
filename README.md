@@ -33,9 +33,6 @@ pip install -r requirements.txt
 
 # Descargar el modelo de traduccion (primera vez)
 ollama pull translategemma:12b
-
-# Opcional: descargar el modelo de vision para --traducir-imagenes
-ollama pull qwen2.5vl:7b
 ```
 
 ## Uso
@@ -68,8 +65,7 @@ python traductor-de-textos.py pagina.html --de-idioma en --a-idioma es
 | `--actualizar-modelo` | Verificar si hay una version mas nueva del modelo en Ollama |
 | `--revisar` | EPUB: exportar capitulos traducidos como HTML para revision manual |
 | `--desde-revision CARPETA` | EPUB: generar EPUB final desde HTMLs corregidos manualmente |
-| `--traducir-imagenes` | Tambien traducir el texto dentro de las imagenes (OCR + traduccion via modelo de vision). Agrega la traduccion como caption debajo de cada imagen con texto. |
-| `--modelo-vision MODELO` | Modelo Ollama de vision para `--traducir-imagenes` (default: `qwen2.5vl:7b`) |
+| `--traducir-imagenes` | Tambien traducir el texto dentro de las imagenes (OCR + traduccion en un solo paso). Agrega la traduccion como caption debajo de cada imagen con texto. |
 
 ## Ejemplos
 
@@ -95,7 +91,7 @@ python traductor-de-textos.py informe.docx --de-idioma en --a-idioma es --traduc
 
 ## Optimizar Ollama (opcional)
 
-Para acelerar la inferencia y reducir el consumo de memoria, conviene activar Flash Attention y la cuantizacion del KV cache a nivel del servidor de Ollama. Aplica tanto al modelo de traduccion como al de vision.
+Para acelerar la inferencia y reducir el consumo de memoria, conviene activar Flash Attention y la cuantizacion del KV cache a nivel del servidor de Ollama. Aplica al modelo de traduccion.
 
 Si se lanza Ollama desde terminal con `ollama serve`, agregar a `~/.zshrc`:
 
@@ -117,16 +113,14 @@ Que hace cada una:
 
 Para verificar que se aplicaron, en `~/.ollama/logs/server.log` deberia figurar `flash_attention = 1` al cargar el modelo.
 
-### Macs con poca RAM y `--traducir-imagenes`
+### Macs con poca RAM
 
-Con 16-18 GB de RAM, mantener `translategemma:12b` y `qwen2.5vl:7b` cargados a la vez deja muy poco margen y Ollama termina alternando entre ambos. Una alternativa es usar el modelo de vision mas chico:
+Con 16-18 GB de RAM, `translategemma:12b` (~8 GB) deja margen suficiente para el sistema y otras aplicaciones. Si se necesita aún más holgura, usar la variante de 4B:
 
 ```bash
-ollama pull qwen2.5vl:3b
-python traductor-de-textos.py informe.docx --traducir-imagenes --modelo-vision qwen2.5vl:3b
+ollama pull translategemma:4b
+python traductor-de-textos.py informe.docx --modelo translategemma:4b --traducir-imagenes
 ```
-
-Para detectar y traducir texto en imagenes suele alcanzar y deja los dos modelos hot en paralelo.
 
 ## Notas
 
@@ -135,4 +129,4 @@ Para detectar y traducir texto en imagenes suele alcanzar y deja los dos modelos
 - Los archivos EPUB preservan imagenes, estilos y estructura de capitulos.
 - Para HTML, las imagenes se redimensionan al 75% del ancho de pagina en el DOCX resultante.
 - Al mover o renombrar la carpeta del proyecto, hay que recrear el `venv` (`python3 -m venv venv`).
-- `--traducir-imagenes` agrega ~3-5 segundos por imagen y requiere el modelo de vision `qwen2.5vl:7b` (~6 GB). El caption se inserta debajo de cada imagen, ajustado a su ancho y alineacion. Algunas imagenes con texto fino (graficos de linea con etiquetas chicas) pueden no ser detectadas — en ese caso no se agrega caption.
+- `--traducir-imagenes` agrega ~3-5 segundos por imagen. Usa el mismo modelo de traduccion que el texto. El caption se inserta debajo de cada imagen, ajustado a su ancho y alineacion. Algunas imagenes con texto fino (graficos de linea con etiquetas chicas) pueden no ser detectadas — en ese caso no se agrega caption.

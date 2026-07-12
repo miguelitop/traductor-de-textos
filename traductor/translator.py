@@ -13,29 +13,7 @@ from tqdm import tqdm
 
 from .config import REINTENTOS_MAX
 from .image_handler import traducir_imagen
-
-
-def _ollama_chat_timeout(*args, timeout_secs=180, fallback_timeout=300, **kwargs):
-    """Wrapper para ollama.chat con timeout.
-
-    Intenta timeout nativo de la librería; si falla (TypeError),
-    usa concurrent.futures.ThreadPoolExecutor como fallback.
-    Convierte excepciones de timeout en Exception para reintentos.
-    """
-    try:
-        try:
-            return ollama.chat(*args, timeout=timeout_secs, **kwargs)
-        except TypeError:
-            # Versión de ollama que no acepta timeout → ThreadPoolExecutor
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(lambda: ollama.chat(*args, **kwargs))
-                return future.result(timeout=fallback_timeout)
-    except Exception as exc:
-        if "Timeout" in type(exc).__name__:
-            raise Exception(
-                f"Timeout: Ollama no respondió tras {timeout_secs}s"
-            ) from exc
-        raise
+from .utils import ollama_chat_timeout
 
 
 def traducir_chunk(texto: str, modelo: str,
@@ -71,7 +49,7 @@ def traducir_chunk(texto: str, modelo: str,
     palabras_entrada = len(texto.split())
     max_tokens = max(256, int(palabras_entrada * 2 * 1.3))
 
-    response = _ollama_chat_timeout(
+    response = ollama_chat_timeout(
         model=modelo,
         messages=[{"role": "user", "content": prompt}],
         options={"repeat_penalty": 1.3, "repeat_last_n": 128,
@@ -231,7 +209,7 @@ def traducir_chunks(chunks: list[str], modelo: str, pausa: float,
     return traducciones, errores, sospechosos
 
 
-def traducir_imagenes(imagenes: list, modelo_vision: str,
+def traducir_imagenes(imagenes: list, modelo: str,
                       nombre_origen: str = "English",
                       nombre_destino: str = "Spanish") -> tuple[int, int, int]:
     """Traduce in-place el texto embebido en una lista de imágenes.
@@ -257,7 +235,7 @@ def traducir_imagenes(imagenes: list, modelo_vision: str,
             for intento in range(1, REINTENTOS_MAX + 1):
                 try:
                     resultado = traducir_imagen(
-                        img.imagen_bytes, modelo_vision,
+                        img.imagen_bytes, modelo,
                         nombre_origen, nombre_destino, cache,
                     )
                     img.traduccion = resultado

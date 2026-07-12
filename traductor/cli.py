@@ -30,7 +30,7 @@ except ImportError:
     sys.exit(1)
 
 from .config import (MODELO_DEFAULT, CHUNK_PALABRAS, PAUSA_ENTRE_CHUNKS,
-                     FUENTE_DEFAULT, TAMANO_FUENTE_DEFAULT, MODELO_VISION_DEFAULT)
+                     FUENTE_DEFAULT, TAMANO_FUENTE_DEFAULT)
 from .converter import convertir_a_docx, convertir_con_calibre
 from .utils import normalizar_path_entrada
 from .docx_handler import (extraer_unidades, aplicar_traducciones, aplicar_fuente,
@@ -189,13 +189,8 @@ def main():
     )
     parser.add_argument(
         "--traducir-imagenes", action="store_true",
-        help="También traducir el texto que aparece dentro de las imágenes (OCR + traducción "
-             "via modelo de visión). Agrega un caption debajo de cada imagen con texto."
-    )
-    parser.add_argument(
-        "--modelo-vision", default=MODELO_VISION_DEFAULT,
-        help=f"Modelo Ollama de visión a usar con --traducir-imagenes "
-             f"(default: {MODELO_VISION_DEFAULT})"
+        help="También traducir el texto que aparece dentro de las imágenes. "
+             "Agrega un caption debajo de cada imagen con texto."
     )
     # Sin ningún argumento: mostrar uso y salir
     if len(sys.argv) == 1:
@@ -207,17 +202,6 @@ def main():
     # Modo solo actualización de modelo (sin archivo de entrada)
     if args.actualizar_modelo and not args.entrada:
         verificar_modelo(args.modelo, actualizar=True)
-        # Modelo de visión: solo si ya está local (no forzar pull de ~6 GB)
-        try:
-            modelos_locales = [m.model for m in ollama.list().models]
-            vision_base = args.modelo_vision.split(":")[0]
-            if any(vision_base in m for m in modelos_locales):
-                verificar_modelo(args.modelo_vision, actualizar=True)
-            else:
-                print(f"\nℹ️  Modelo de visión '{args.modelo_vision}' no instalado, se omite.")
-                print(f"   Para instalarlo: ollama pull {args.modelo_vision}")
-        except Exception:
-            pass  # ya se reportó el error de conexión arriba
         return
 
     if not args.entrada:
@@ -300,8 +284,6 @@ def main():
     print(f"\n⏱️  Inicio: {inicio.strftime('%Y-%m-%d %H:%M:%S')}")
 
     verificar_modelo(args.modelo, actualizar=args.actualizar_modelo)
-    if args.traducir_imagenes:
-        verificar_modelo(args.modelo_vision, actualizar=args.actualizar_modelo)
 
     print(f"📖 Leyendo: {ruta_entrada.name}")
 
@@ -328,7 +310,7 @@ def main():
             if imagenes_epub:
                 print(f"\n🖼️  Imágenes con posible texto: {len(imagenes_epub)}")
                 con_texto, sin_texto, errs_img = traducir_imagenes(
-                    imagenes_epub, args.modelo_vision,
+                    imagenes_epub, args.modelo,
                     nombre_origen, nombre_destino,
                 )
                 print(f"   (con texto: {con_texto}, sin texto: {sin_texto}, errores: {errs_img})")
@@ -428,7 +410,7 @@ def main():
             if imagenes_html:
                 print(f"\n🖼️  Imágenes con posible texto: {len(imagenes_html)}")
                 con_texto, sin_texto, errs_img = traducir_imagenes(
-                    imagenes_html, args.modelo_vision,
+                    imagenes_html, args.modelo,
                     nombre_origen, nombre_destino,
                 )
                 aplicados = aplicar_captions_imagenes_html(imagenes_html)
@@ -537,7 +519,7 @@ def main():
             if imagenes:
                 print(f"\n🖼️  Imágenes con posible texto: {len(imagenes)}")
                 con_texto, sin_texto, errs_img = traducir_imagenes(
-                    imagenes, args.modelo_vision,
+                    imagenes, args.modelo,
                     nombre_origen, nombre_destino,
                 )
                 aplicados = aplicar_captions_imagenes(imagenes)
