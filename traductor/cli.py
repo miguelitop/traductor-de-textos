@@ -31,14 +31,16 @@ except ImportError:
 
 from .config import (MODELO_DEFAULT, CHUNK_PALABRAS, PAUSA_ENTRE_CHUNKS,
                      FUENTE_DEFAULT, TAMANO_FUENTE_DEFAULT, MODELO_VISION_DEFAULT)
-from .converter import convertir_a_docx, convertir_con_calibre, normalizar_path_entrada
+from .converter import convertir_a_docx, convertir_con_calibre
+from .utils import normalizar_path_entrada
 from .docx_handler import (extraer_unidades, aplicar_traducciones, aplicar_fuente,
                            guardar_docx, extraer_imagenes, aplicar_captions_imagenes)
 from .epub_handler import (abrir_epub, extraer_capitulos, aplicar_traducciones_epub, guardar_epub,
                            exportar_revision, importar_revision, extraer_imagenes_epub)
+from .chunker import agrupar_nodos, juntar_grupo, separar_grupo
 from .html_handler import (parsear_html, extraer_nodos_texto, aplicar_traducciones_html,
-                            serializar_html, agrupar_nodos, juntar_grupo, separar_grupo,
-                            extraer_imagenes_html, aplicar_captions_imagenes_html)
+                            extraer_imagenes_html, aplicar_captions_imagenes_html,
+                            crear_resolver_filesystem)
 from .idiomas import seleccionar_idioma, idioma_por_codigo, _IDIOMAS_POR_CODIGO
 from .translator import traducir_chunks, traducir_imagenes
 
@@ -336,18 +338,27 @@ def main():
         nodos_traducidos = 0
         contenidos_epub = {}
 
+        ruta_cache = ruta_salida.with_suffix(ruta_salida.suffix + '.cache.json')
+
         for i, capitulo in enumerate(capitulos, 1):
             textos = [str(nodo).strip() for nodo in capitulo.nodos]
-            print(f"\n   Capítulo {i}/{len(capitulos)}: {len(textos)} bloques de texto")
+            grupos = agrupar_nodos(textos, args.chunk_palabras)
+            chunks_agrupados = [juntar_grupo(textos, g) for g in grupos]
+            print(f"\n   Capítulo {i}/{len(capitulos)}: {len(textos)} bloques de texto → {len(grupos)} chunks")
 
-            # Traducir cada nodo como chunk independiente → correspondencia 1:1 garantizada
-            traducciones_nodos, errores, sospechosos_cap = traducir_chunks(textos, args.modelo, PAUSA_ENTRE_CHUNKS,
+            traducciones_chunks, errores, sospechosos_cap = traducir_chunks(chunks_agrupados, args.modelo, PAUSA_ENTRE_CHUNKS,
                                                             idioma_origen, idioma_destino,
-                                                            nombre_origen, nombre_destino)
+                                                            nombre_origen, nombre_destino,
+                                                            ruta_cache=ruta_cache)
             errores_total.extend(errores)
             for s in sospechosos_cap:
                 s["referencia"] = f"Capítulo {i}, bloque {s['chunk']}"
             sospechosos_total.extend(sospechosos_cap)
+
+            # Desagrupar traducciones para recuperar correspondencia 1:1 con nodos
+            traducciones_nodos = []
+            for traduccion, grupo in zip(traducciones_chunks, grupos):
+                traducciones_nodos.extend(separar_grupo(traduccion, len(grupo)))
 
             item_name, xhtml_bytes = aplicar_traducciones_epub(capitulo, traducciones_nodos)
             contenidos_epub[item_name] = xhtml_bytes
@@ -372,6 +383,10 @@ def main():
         ruta_reporte = guardar_reporte_sospechosos(ruta_salida, sospechosos_total)
         if ruta_reporte:
             print(f"   👁️  {len(sospechosos_total)} bloque(s) con posible anomalía → {ruta_reporte.name}")
+        # Limpiar caché de traducción
+        if ruta_cache and ruta_cache.exists():
+            ruta_cache.unlink()
+
         _imprimir_duracion(inicio)
         return
 
@@ -393,9 +408,11 @@ def main():
         print(f"   {total_palabras:,} palabras, {len(textos)} bloques → {len(grupos)} chunks")
 
         chunks_agrupados = [juntar_grupo(textos, g) for g in grupos]
+        ruta_cache = ruta_salida.with_suffix(ruta_salida.suffix + '.cache.json')
         traducciones_chunks, errores, sospechosos = traducir_chunks(chunks_agrupados, args.modelo, PAUSA_ENTRE_CHUNKS,
                                                             idioma_origen, idioma_destino,
-                                                            nombre_origen, nombre_destino)
+                                                            nombre_origen, nombre_destino,
+                                                            ruta_cache=ruta_cache)
 
         # Desagrupar traducciones para recuperar correspondencia 1:1 con nodos
         traducciones_nodos = []
@@ -407,15 +424,7 @@ def main():
         # Traducción de imágenes (opt-in): resolver es file-system relativo al HTML
         if args.traducir_imagenes:
             html_dir = ruta_entrada.parent
-            def _resolver_html(href: str) -> bytes | None:
-                if href.startswith(("http://", "https://", "data:")):
-                    return None
-                ruta = (html_dir / href.split("#", 1)[0]).resolve()
-                try:
-                    return ruta.read_bytes()
-                except Exception:
-                    return None
-            imagenes_html = extraer_imagenes_html(soup, _resolver_html)
+            imagenes_html = extraer_imagenes_html(soup, crear_resolver_filesystem(html_dir))
             if imagenes_html:
                 print(f"\n🖼️  Imágenes con posible texto: {len(imagenes_html)}")
                 con_texto, sin_texto, errs_img = traducir_imagenes(
@@ -440,7 +449,7 @@ def main():
         # a imágenes/CSS de la carpeta asociada sigan funcionando) y convertir a DOCX.
         ruta_html_tmp = ruta_entrada.parent / (ruta_entrada.stem + f"_tmp_{idioma_destino}.html")
         try:
-            ruta_html_tmp.write_text(serializar_html(soup), encoding="utf-8")
+            ruta_html_tmp.write_text(str(soup), encoding="utf-8")
 
             dir_tmp = Path(tempfile.mkdtemp(prefix="traductor_"))
             ruta_docx = convertir_a_docx(ruta_html_tmp, dir_tmp)
@@ -457,6 +466,9 @@ def main():
             ruta_reporte = guardar_reporte_sospechosos(ruta_salida, sospechosos)
             if ruta_reporte:
                 print(f"   👁️  {len(sospechosos)} chunk(s) con posible anomalía → {ruta_reporte.name}")
+            # Limpiar caché de traducción
+            if ruta_cache.exists():
+                ruta_cache.unlink()
             _imprimir_duracion(inicio)
         finally:
             if ruta_html_tmp.exists():
@@ -497,9 +509,11 @@ def main():
         mins = tiempo_estimado // 60
         print(f"   Tiempo estimado: ~{mins} minutos\n")
 
+        ruta_cache = ruta_salida.with_suffix(ruta_salida.suffix + '.cache.json')
         traducciones_chunks, errores, sospechosos = traducir_chunks(chunks, args.modelo, PAUSA_ENTRE_CHUNKS,
                                                     idioma_origen, idioma_destino,
-                                                    nombre_origen, nombre_destino)
+                                                    nombre_origen, nombre_destino,
+                                                    ruta_cache=ruta_cache)
 
         # Desagrupar para recuperar correspondencia 1:1 con las unidades
         traducciones = []
@@ -545,6 +559,9 @@ def main():
         ruta_reporte = guardar_reporte_sospechosos(ruta_salida, sospechosos)
         if ruta_reporte:
             print(f"   👁️  {len(sospechosos)} chunk(s) con posible anomalía → {ruta_reporte.name}")
+        # Limpiar caché de traducción
+        if ruta_cache.exists():
+            ruta_cache.unlink()
         _imprimir_duracion(inicio)
 
     finally:

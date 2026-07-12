@@ -1,12 +1,41 @@
+import hashlib
+import json
+import os
 import re
 import time
 from collections import Counter
+from pathlib import Path
+from typing import Optional
 
 import ollama
+import concurrent.futures
 from tqdm import tqdm
 
 from .config import REINTENTOS_MAX
 from .image_handler import traducir_imagen
+
+
+def _ollama_chat_timeout(*args, timeout_secs=180, fallback_timeout=300, **kwargs):
+    """Wrapper para ollama.chat con timeout.
+
+    Intenta timeout nativo de la librería; si falla (TypeError),
+    usa concurrent.futures.ThreadPoolExecutor como fallback.
+    Convierte excepciones de timeout en Exception para reintentos.
+    """
+    try:
+        try:
+            return ollama.chat(*args, timeout=timeout_secs, **kwargs)
+        except TypeError:
+            # Versión de ollama que no acepta timeout → ThreadPoolExecutor
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(lambda: ollama.chat(*args, **kwargs))
+                return future.result(timeout=fallback_timeout)
+    except Exception as exc:
+        if "Timeout" in type(exc).__name__:
+            raise Exception(
+                f"Timeout: Ollama no respondió tras {timeout_secs}s"
+            ) from exc
+        raise
 
 
 def traducir_chunk(texto: str, modelo: str,
@@ -42,7 +71,7 @@ def traducir_chunk(texto: str, modelo: str,
     palabras_entrada = len(texto.split())
     max_tokens = max(256, int(palabras_entrada * 2 * 1.3))
 
-    response = ollama.chat(
+    response = _ollama_chat_timeout(
         model=modelo,
         messages=[{"role": "user", "content": prompt}],
         options={"repeat_penalty": 1.3, "repeat_last_n": 128,
@@ -114,14 +143,39 @@ def _detectar_anomalias(original: str, traduccion: str) -> list[str]:
     return anomalias
 
 
+def _guardar_cache(cache: dict[str, str], ruta_cache: Path) -> None:
+    """Guarda el caché a disco con escritura atómica."""
+    tmp = ruta_cache.with_suffix(ruta_cache.suffix + ".tmp")
+    try:
+        with tmp.open("w", encoding="utf-8") as f:
+            json.dump(cache, f, ensure_ascii=False, indent=2)
+        os.replace(str(tmp), str(ruta_cache))
+    except Exception:
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
 def traducir_chunks(chunks: list[str], modelo: str, pausa: float,
                     idioma_origen: str = "en", idioma_destino: str = "es",
                     nombre_origen: str = "English", nombre_destino: str = "Spanish",
+                    ruta_cache: Optional[Path] = None,
                     ) -> tuple[list[str], list[int], list[dict]]:
     """Traduce una lista de chunks con barra de progreso y reintentos.
     Devuelve (traducciones, lista_de_chunks_con_error, chunks_sospechosos).
     Cada sospechoso es un dict con: chunk, original, traduccion, anomalias.
     """
+    # ── Cargar caché si existe ──
+    cache: dict[str, str] = {}
+    if ruta_cache and ruta_cache.exists():
+        try:
+            with ruta_cache.open("r", encoding="utf-8") as f:
+                cache = json.load(f)
+            tqdm.write(f"💾 Caché cargado: {len(cache)} chunks ya traducidos")
+        except Exception as e:
+            tqdm.write(f"⚠️  No se pudo cargar el caché ({e}), empezando desde cero.")
+
     traducciones = []
     errores = []
     sospechosos = []
@@ -129,6 +183,13 @@ def traducir_chunks(chunks: list[str], modelo: str, pausa: float,
     with tqdm(total=len(chunks), unit="chunk", desc="Traduciendo",
               bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} chunks [{elapsed}<{remaining}]") as barra:
         for i, chunk in enumerate(chunks):
+            # ── Verificar caché ──
+            hash_chunk = hashlib.sha256(chunk.encode()).hexdigest()
+            if hash_chunk in cache:
+                traducciones.append(cache[hash_chunk])
+                barra.update(1)
+                continue
+
             exito = False
             for intento in range(1, REINTENTOS_MAX + 1):
                 try:
@@ -158,6 +219,11 @@ def traducir_chunks(chunks: list[str], modelo: str, pausa: float,
                         tqdm.write(f"❌ Chunk {i+1} falló tras {REINTENTOS_MAX} intentos. Se omite.")
                         traducciones.append(f"[ERROR DE TRADUCCIÓN EN CHUNK {i+1}]\n\n{chunk}")
                         errores.append(i + 1)
+
+            # ── Persistir en caché ──
+            if exito and ruta_cache:
+                cache[hash_chunk] = traducciones[-1]
+                _guardar_cache(cache, ruta_cache)
 
             barra.update(1)
             time.sleep(pausa)

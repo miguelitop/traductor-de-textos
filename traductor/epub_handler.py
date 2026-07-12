@@ -82,9 +82,13 @@ def aplicar_traducciones_epub(capitulo: CapituloEPUB,
     return capitulo.item.get_name(), xhtml.encode("utf-8")
 
 
-def _construir_resolver_recurso(book: epub.EpubBook, item_name: str):
+def _construir_resolver_recurso(mapa_recursos: dict[str, object],
+                                 item_name: str):
     """Devuelve una función que dado un href relativo del HTML, devuelve los bytes
     del recurso dentro del EPUB.
+
+    `mapa_recursos` es un diccionario {href_normalizado: item} construido una sola vez
+    a partir de `book.get_items()`, para evitar escaneos lineales repetidos.
 
     `item_name` es el nombre del item HTML actual (para resolver paths relativos).
     """
@@ -100,8 +104,8 @@ def _construir_resolver_recurso(book: epub.EpubBook, item_name: str):
             ruta_abs = posixpath.normpath(posixpath.join(item_dir, href_limpio))
         else:
             ruta_abs = posixpath.normpath(href_limpio)
-        # Buscar el item en el book por su href
-        item = book.get_item_with_href(ruta_abs)
+        # Buscar el item en el mapa (O(1) en vez de scan lineal con get_item_with_href)
+        item = mapa_recursos.get(ruta_abs)
         if item is None:
             return None
         return item.get_content()
@@ -113,10 +117,21 @@ def extraer_imagenes_epub(book: epub.EpubBook,
                            capitulos: list[CapituloEPUB]) -> list[ImagenHTML]:
     """Recorre todos los capítulos y extrae sus imágenes.
     Setea capitulo.imagenes y devuelve la lista plana para procesamiento.
+
+    Construye un mapa {href: item} una sola vez para evitar escaneos lineales
+    repetidos con `book.get_item_with_href()` (pasa de O(N*M) a O(N+M)).
     """
+    # Construir mapa de recursos una sola vez
+    mapa_recursos = {}
+    for item in book.get_items():
+        href = item.get_name()
+        if href:
+            mapa_recursos[posixpath.normpath(href)] = item
+
     todas = []
     for capitulo in capitulos:
-        resolver = _construir_resolver_recurso(book, capitulo.item.get_name())
+        resolver = _construir_resolver_recurso(mapa_recursos,
+                                                capitulo.item.get_name())
         capitulo.imagenes = extraer_imagenes_html(capitulo.soup, resolver)
         todas.extend(capitulo.imagenes)
     return todas

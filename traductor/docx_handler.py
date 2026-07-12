@@ -420,13 +420,19 @@ def _aplicar_fuente_parrafos(parrafos: list[Paragraph], nombre_fuente: str,
             run.font.size = Pt(tamano)
 
 
-def aplicar_fuente(doc: Document, nombre_fuente: str, tamano: int):
-    """Aplica fuente y tamaño a todo el documento (cuerpo + tablas)."""
-    _aplicar_fuente_parrafos(doc.paragraphs, nombre_fuente, tamano)
-    for tabla in doc.tables:
+def _aplicar_fuente_recursivo(parrafos, tablas, nombre_fuente: str, tamano: int):
+    """Aplica fuente recursivamente a párrafos y tablas (incluyendo anidadas)."""
+    _aplicar_fuente_parrafos(parrafos, nombre_fuente, tamano)
+    for tabla in tablas:
         for fila in tabla.rows:
             for celda in fila.cells:
-                _aplicar_fuente_parrafos(celda.paragraphs, nombre_fuente, tamano)
+                _aplicar_fuente_recursivo(celda.paragraphs, celda.tables,
+                                          nombre_fuente, tamano)
+
+
+def aplicar_fuente(doc: Document, nombre_fuente: str, tamano: int):
+    """Aplica fuente y tamaño a todo el documento (cuerpo + tablas, incluyendo anidadas)."""
+    _aplicar_fuente_recursivo(doc.paragraphs, doc.tables, nombre_fuente, tamano)
 
 
 def guardar_docx(doc: Document, ruta_salida: Path):

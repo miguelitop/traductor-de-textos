@@ -14,8 +14,10 @@ from __future__ import annotations
 import hashlib
 import io
 import re
+from collections import Counter
 
 import ollama
+import concurrent.futures
 from PIL import Image
 
 from .config import (DIM_MIN_IMAGEN, SENTINEL_SIN_TEXTO)
@@ -64,9 +66,31 @@ _OPCIONES_VISION = {
 }
 
 
+def _ollama_chat_timeout(*args, timeout_secs=180, fallback_timeout=300, **kwargs):
+    """Wrapper para ollama.chat con timeout.
+
+    Intenta timeout nativo de la librería; si falla (TypeError),
+    usa concurrent.futures.ThreadPoolExecutor como fallback.
+    Convierte excepciones de timeout en Exception para reintentos.
+    """
+    try:
+        try:
+            return ollama.chat(*args, timeout=timeout_secs, **kwargs)
+        except TypeError:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(lambda: ollama.chat(*args, **kwargs))
+                return future.result(timeout=fallback_timeout)
+    except Exception as exc:
+        if "Timeout" in type(exc).__name__:
+            raise Exception(
+                f"Timeout: Ollama no respondió tras {timeout_secs}s"
+            ) from exc
+        raise
+
+
 def _llamar_vision(imagen_bytes: bytes, modelo: str, prompt: str) -> str:
     """Una llamada a Ollama-vision. Devuelve el texto crudo del modelo."""
-    response = ollama.chat(
+    response = _ollama_chat_timeout(
         model=modelo,
         messages=[{"role": "user", "content": prompt, "images": [imagen_bytes]}],
         options=_OPCIONES_VISION,
@@ -80,7 +104,6 @@ def _es_repeticion_loop(texto: str) -> bool:
     if len(lineas) < 6:
         return False
     # Si la línea más común es >70% del total, es loop
-    from collections import Counter
     mas_comun, freq = Counter(lineas).most_common(1)[0]
     return freq / len(lineas) > 0.7
 
