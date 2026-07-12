@@ -479,11 +479,30 @@ def main():
 
         textos = [u.texto for u in unidades]
         total_palabras = sum(len(t.split()) for t in textos)
-        # Agrupar unidades en chunks con separadores ||||, igual que el path EPUB/HTML.
-        # Es mucho más robusto que partir por \n: separar_grupo fuerza la cantidad
-        # exacta de unidades por grupo, evitando la desalineación que se produce
-        # cuando el modelo fusiona o parte párrafos.
+        # Los párrafos con tokens ⟦N⟧ (hipervínculos/notas) NO se agrupan con ||||:
+        # la combinación de ambos marcadores en el prompt confunde al modelo y genera
+        # alucinaciones repetitivas. Se aíslan como chunks individuales, y los párrafos
+        # sin token que queden entre medio se re-agrupan normalmente.
         grupos = agrupar_nodos(textos, args.chunk_palabras)
+        grupos_corregidos = []
+        for g in grupos:
+            if not any("⟦" in textos[i] for i in g):
+                grupos_corregidos.append(g)
+            else:
+                # Partir el grupo en subgrupos: cada párrafo con token va solo,
+                # las secuencias de párrafos sin token se mantienen agrupadas.
+                sub = []
+                for i in g:
+                    if "⟦" in textos[i]:
+                        if sub:
+                            grupos_corregidos.append(sub)
+                            sub = []
+                        grupos_corregidos.append([i])
+                    else:
+                        sub.append(i)
+                if sub:
+                    grupos_corregidos.append(sub)
+        grupos = grupos_corregidos
         chunks = [juntar_grupo(textos, g) for g in grupos]
 
         print(f"   {total_palabras:,} palabras → {len(chunks)} chunks de ~{args.chunk_palabras} palabras c/u")
