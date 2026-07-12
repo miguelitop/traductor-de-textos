@@ -573,8 +573,8 @@ def _parrafo_solo_tiene_runs_vacios(elem_p) -> bool:
 
 
 def aplicar_captions_imagenes(imagenes: list[ImagenTraducible]) -> int:
-    """Para cada imagen con traducción, inserta una tabla 1×2 (imagen + caption)
-    en el lugar de la imagen. Si el párrafo original queda vacío, se elimina.
+    """Para cada imagen con traducción, inserta un párrafo con el texto traducido
+    debajo de la imagen. Sin tabla.
 
     Devuelve la cantidad de captions aplicados.
     """
@@ -591,18 +591,10 @@ def aplicar_captions_imagenes(imagenes: list[ImagenTraducible]) -> int:
         if img.run_element.getparent() is not elem_p:
             continue
 
-        run_clon = deepcopy(img.run_element)
-        tbl = _construir_tabla_imagen_caption(
-            run_clon, img.ancho_emu, img.alineacion_jc, img.traduccion,
-        )
-
-        # Sacar el run original del párrafo y poner la tabla justo antes del párrafo
-        elem_p.remove(img.run_element)
-        elem_p.addprevious(tbl)
-
-        # Si el párrafo quedó vacío (caso típico: párrafo era solo la imagen), lo borro
-        if _parrafo_solo_tiene_runs_vacios(elem_p):
-            parent.remove(elem_p)
+        # Crear párrafo con el texto traducido como caption debajo de la imagen
+        cap = _crear_parrafo_caption(img.traduccion)
+        # Insertarlo justo después del párrafo que contiene la imagen
+        elem_p.addnext(cap)
 
         aplicados += 1
     return aplicados

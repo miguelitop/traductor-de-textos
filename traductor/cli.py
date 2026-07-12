@@ -164,6 +164,10 @@ def main():
         help=f"Palabras por chunk (default: {CHUNK_PALABRAS})"
     )
     parser.add_argument(
+        "--limite", type=int, default=None, metavar="N",
+        help="Traducir solo los primeros N chunks"
+    )
+    parser.add_argument(
         "--salida", default=None,
         help="Archivo de salida (default: <entrada>_<destino>.<ext>)"
     )
@@ -505,6 +509,11 @@ def main():
                     grupos_corregidos.append(sub)
         grupos = grupos_corregidos
         chunks = [juntar_grupo(textos, g) for g in grupos]
+
+        if args.limite and args.limite < len(chunks):
+            chunks = chunks[:args.limite]
+            grupos = grupos[:args.limite]
+            print(f"   ⚠️  Limitado a los primeros {args.limite} chunks (--limite)")
 
         print(f"   {total_palabras:,} palabras → {len(chunks)} chunks de ~{args.chunk_palabras} palabras c/u")
         tiempo_estimado = len(chunks) * 10
