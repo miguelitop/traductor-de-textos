@@ -150,7 +150,15 @@ def traducir_chunks(chunks: list[str], modelo: str, pausa: float,
         try:
             with ruta_cache.open("r", encoding="utf-8") as f:
                 cache = json.load(f)
-            tqdm.write(f"💾 Caché cargado: {len(cache)} chunks ya traducidos")
+            if cache:
+                tqdm.write(f"💾 Caché encontrado: {len(cache)} chunks ya traducidos")
+                resp = input("   ¿Borrar y empezar de cero? [s/N]: ").strip().lower()
+                if resp == "s":
+                    cache = {}
+                    try:
+                        ruta_cache.unlink()
+                    except Exception:
+                        pass
         except Exception as e:
             tqdm.write(f"⚠️  No se pudo cargar el caché ({e}), empezando desde cero.")
 
