@@ -135,6 +135,22 @@ def _guardar_cache(cache: dict[str, str], ruta_cache: Path) -> None:
             pass
 
 
+def resolver_cache_al_inicio(ruta_cache: Optional[Path]) -> None:
+    """Si existe un caché previo, pregunta al usuario si quiere borrarlo.
+    Debe llamarse antes de cualquier trabajo pesado (conversión, etc.)."""
+    if ruta_cache and ruta_cache.exists():
+        try:
+            with ruta_cache.open("r", encoding="utf-8") as f:
+                cache = json.load(f)
+            if cache:
+                tqdm.write(f"💾 Caché encontrado: {len(cache)} chunks ya traducidos")
+                resp = input("   ¿Borrar y empezar de cero? [s/N]: ").strip().lower()
+                if resp == "s":
+                    ruta_cache.unlink()
+        except Exception:
+            pass
+
+
 def traducir_chunks(chunks: list[str], modelo: str, pausa: float,
                     idioma_origen: str = "en", idioma_destino: str = "es",
                     nombre_origen: str = "English", nombre_destino: str = "Spanish",
@@ -144,21 +160,13 @@ def traducir_chunks(chunks: list[str], modelo: str, pausa: float,
     Devuelve (traducciones, lista_de_chunks_con_error, chunks_sospechosos).
     Cada sospechoso es un dict con: chunk, original, traduccion, anomalias.
     """
-    # ── Cargar caché si existe ──
+    # ── Cargar caché si existe (sin preguntar — ya se resolvió antes) ──
     cache: dict[str, str] = {}
     if ruta_cache and ruta_cache.exists():
         try:
             with ruta_cache.open("r", encoding="utf-8") as f:
                 cache = json.load(f)
-            if cache:
-                tqdm.write(f"💾 Caché encontrado: {len(cache)} chunks ya traducidos")
-                resp = input("   ¿Borrar y empezar de cero? [s/N]: ").strip().lower()
-                if resp == "s":
-                    cache = {}
-                    try:
-                        ruta_cache.unlink()
-                    except Exception:
-                        pass
+            tqdm.write(f"💾 Caché cargado: {len(cache)} chunks ya traducidos")
         except Exception as e:
             tqdm.write(f"⚠️  No se pudo cargar el caché ({e}), empezando desde cero.")
 

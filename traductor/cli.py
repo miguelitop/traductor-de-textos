@@ -42,7 +42,7 @@ from .html_handler import (parsear_html, extraer_nodos_texto, aplicar_traduccion
                             extraer_imagenes_html, aplicar_captions_imagenes_html,
                             crear_resolver_filesystem)
 from .idiomas import seleccionar_idioma, idioma_por_codigo, _IDIOMAS_POR_CODIGO
-from .translator import traducir_chunks, traducir_imagenes
+from .translator import traducir_chunks, traducir_imagenes, resolver_cache_al_inicio
 
 FORMATOS_SOPORTADOS = {".docx", ".pdf", ".rtf", ".doc", ".odt", ".epub", ".html", ".htm"}
 
@@ -280,6 +280,10 @@ def main():
         ruta_entrada.stem + ext_salida
     )
 
+    # Preguntar por caché antes de cualquier trabajo pesado (conversión, lectura, etc.)
+    ruta_cache = ruta_salida.with_suffix(ruta_salida.suffix + '.cache.json')
+    resolver_cache_al_inicio(ruta_cache)
+
     inicio = datetime.now()
     print(f"\n⏱️  Inicio: {inicio.strftime('%Y-%m-%d %H:%M:%S')}")
 
@@ -319,8 +323,6 @@ def main():
         sospechosos_total = []
         nodos_traducidos = 0
         contenidos_epub = {}
-
-        ruta_cache = ruta_salida.with_suffix(ruta_salida.suffix + '.cache.json')
 
         for i, capitulo in enumerate(capitulos, 1):
             textos = [str(nodo).strip() for nodo in capitulo.nodos]
@@ -390,7 +392,6 @@ def main():
         print(f"   {total_palabras:,} palabras, {len(textos)} bloques → {len(grupos)} chunks")
 
         chunks_agrupados = [juntar_grupo(textos, g) for g in grupos]
-        ruta_cache = ruta_salida.with_suffix(ruta_salida.suffix + '.cache.json')
         traducciones_chunks, errores, sospechosos = traducir_chunks(chunks_agrupados, args.modelo, PAUSA_ENTRE_CHUNKS,
                                                             idioma_origen, idioma_destino,
                                                             nombre_origen, nombre_destino,
@@ -510,7 +511,6 @@ def main():
         mins = tiempo_estimado // 60
         print(f"   Tiempo estimado: ~{mins} minutos\n")
 
-        ruta_cache = ruta_salida.with_suffix(ruta_salida.suffix + '.cache.json')
         traducciones_chunks, errores, sospechosos = traducir_chunks(chunks, args.modelo, PAUSA_ENTRE_CHUNKS,
                                                     idioma_origen, idioma_destino,
                                                     nombre_origen, nombre_destino,
