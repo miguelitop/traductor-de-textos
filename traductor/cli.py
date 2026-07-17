@@ -43,6 +43,7 @@ from .html_handler import (parsear_html, extraer_nodos_texto, aplicar_traduccion
                             crear_resolver_filesystem)
 from .idiomas import seleccionar_idioma, idioma_por_codigo, _IDIOMAS_POR_CODIGO
 from .translator import traducir_chunks, traducir_imagenes, resolver_cache_al_inicio
+from .utils import contar_palabras_efectivas
 
 FORMATOS_SOPORTADOS = {".docx", ".pdf", ".rtf", ".doc", ".odt", ".epub", ".html", ".htm"}
 
@@ -306,7 +307,7 @@ def main():
 
         total_nodos = sum(len(c.nodos) for c in capitulos)
         total_palabras = sum(
-            len(nodo.strip().split()) for c in capitulos for nodo in c.nodos
+            contar_palabras_efectivas(str(nodo).strip()) for c in capitulos for nodo in c.nodos
         )
         print(f"   {len(capitulos)} capítulos, {total_nodos} bloques de texto, {total_palabras:,} palabras")
 
@@ -389,7 +390,7 @@ def main():
             sys.exit(1)
 
         textos = [str(n).strip() for n in nodos]
-        total_palabras = sum(len(t.split()) for t in textos)
+        total_palabras = sum(contar_palabras_efectivas(t) for t in textos)
 
         # Agrupar nodos en chunks para reducir llamadas a Ollama
         grupos = agrupar_nodos(textos, args.chunk_palabras)
@@ -483,7 +484,7 @@ def main():
             sys.exit(1)
 
         textos = [u.texto for u in unidades]
-        total_palabras = sum(len(t.split()) for t in textos)
+        total_palabras = sum(contar_palabras_efectivas(t) for t in textos)
         # Los párrafos con tokens ⟦N⟧ (hipervínculos/notas) NO se agrupan con ||||:
         # la combinación de ambos marcadores en el prompt confunde al modelo y genera
         # alucinaciones repetitivas. Se aíslan como chunks individuales, y los párrafos

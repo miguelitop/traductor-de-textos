@@ -72,6 +72,27 @@ def _ruta_para_exe(ruta: Path, exe_es_windows: bool) -> str:
     return str(ruta)
 
 
+def contar_palabras_efectivas(texto: str) -> int:
+    """Estima la cantidad de «palabras equivalentes» para chunking y límites de tokens.
+
+    Para idiomas con espacios (lenguas occidentales) usa split() normalmente.
+    Para idiomas sin espacios entre palabras —chino, japonés, coreano (CJK)—
+    estima basado en caracteres, porque len(texto.split()) colapsa a 1 y rompe
+    el agrupamiento de chunks y el cálculo de max_tokens de salida.
+
+    Heurística: si el ratio caracteres/palabras_split > 15, asumimos texto CJK
+    y estimamos ~2 caracteres por «palabra equivalente» (redondeado hacia arriba).
+    """
+    chars = len(texto)
+    palabras_split = len(texto.split())
+    if palabras_split == 0:
+        return 0
+    # Si hay en promedio más de 15 caracteres por "palabra", es texto sin espacios
+    if chars / palabras_split > 15:
+        return max(1, chars // 2)
+    return max(1, palabras_split)
+
+
 def ollama_chat_timeout(*args, timeout_secs=180, fallback_timeout=300, **kwargs):
     """Wrapper para ollama.chat con timeout.
 

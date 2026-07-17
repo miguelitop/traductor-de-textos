@@ -13,7 +13,7 @@ from tqdm import tqdm
 
 from .config import REINTENTOS_MAX
 from .image_handler import traducir_imagen
-from .utils import ollama_chat_timeout
+from .utils import contar_palabras_efectivas, ollama_chat_timeout
 
 
 def traducir_chunk(texto: str, modelo: str,
@@ -45,8 +45,10 @@ def traducir_chunk(texto: str, modelo: str,
         f"Please translate the following {nombre_origen} text into {nombre_destino}:\n\n\n"
         f"{texto}"
     )
-    # Limitar tokens de salida al doble del input para cortar alucinaciones repetitivas
-    palabras_entrada = len(texto.split())
+    # Limitar tokens de salida al doble del input para cortar alucinaciones repetitivas.
+    # Usamos contar_palabras_efectivas() para que el cálculo funcione también con
+    # idiomas sin espacios (chino, japonés, coreano) donde len(texto.split()) ≈ 1.
+    palabras_entrada = contar_palabras_efectivas(texto)
     max_tokens = max(256, int(palabras_entrada * 2 * 1.3))
 
     response = ollama_chat_timeout(
