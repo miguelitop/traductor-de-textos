@@ -29,15 +29,16 @@ except ImportError:
     print("❌ Falta instalar: pip install tqdm")
     sys.exit(1)
 
-from .config import (MODELO_DEFAULT, CHUNK_PALABRAS, PAUSA_ENTRE_CHUNKS,
+from .config import (MODELO_DEFAULT, PAUSA_ENTRE_CHUNKS,
                      FUENTE_DEFAULT, TAMANO_FUENTE_DEFAULT)
 from .converter import convertir_a_docx, convertir_con_calibre
 from .utils import normalizar_path_entrada
-from .docx_handler import (extraer_unidades, aplicar_traducciones, aplicar_fuente,
-                           guardar_docx, extraer_imagenes, aplicar_captions_imagenes)
+from .docx_handler import (extraer_unidades, mergear_parrafos, desagrupar_formatos,
+                           aplicar_traducciones, aplicar_fuente, guardar_docx,
+                           extraer_imagenes, aplicar_captions_imagenes)
 from .epub_handler import (abrir_epub, extraer_capitulos, aplicar_traducciones_epub, guardar_epub,
                            exportar_revision, importar_revision, extraer_imagenes_epub)
-from .chunker import agrupar_nodos, juntar_grupo, separar_grupo
+
 from .html_handler import (parsear_html, extraer_nodos_texto, aplicar_traducciones_html,
                             extraer_imagenes_html, aplicar_captions_imagenes_html,
                             crear_resolver_filesystem)
@@ -161,12 +162,8 @@ def main():
         help=f"Modelo Ollama a usar (default: {MODELO_DEFAULT})"
     )
     parser.add_argument(
-        "--chunk-palabras", type=int, default=CHUNK_PALABRAS,
-        help=f"Palabras por chunk (default: {CHUNK_PALABRAS})"
-    )
-    parser.add_argument(
         "--limite", type=int, default=None, metavar="N",
-        help="Traducir solo los primeros N chunks"
+        help="Traducir solo los primeros N bloques de texto"
     )
     parser.add_argument(
         "--salida", default=None,
@@ -331,24 +328,16 @@ def main():
 
         for i, capitulo in enumerate(capitulos, 1):
             textos = [str(nodo).strip() for nodo in capitulo.nodos]
-            grupos = agrupar_nodos(textos, args.chunk_palabras)
-            chunks_agrupados = [juntar_grupo(textos, g) for g in grupos]
-            print(f"\n   Capítulo {i}/{len(capitulos)}: {len(textos)} bloques de texto → {len(grupos)} chunks")
+            print(f"\n   Capítulo {i}/{len(capitulos)}: {len(textos)} bloques de texto")
 
-            traducciones_chunks, errores, sospechosos_cap = traducir_chunks(chunks_agrupados, args.modelo, PAUSA_ENTRE_CHUNKS,
+            traducciones_nodos, errores, sospechosos_cap = traducir_chunks(textos, args.modelo, PAUSA_ENTRE_CHUNKS,
                                                             idioma_origen, idioma_destino,
                                                             nombre_origen, nombre_destino,
-                                                            ruta_cache=ruta_cache,
-                                                            partes_por_chunk=[len(g) for g in grupos])
+                                                            ruta_cache=ruta_cache)
             errores_total.extend(errores)
             for s in sospechosos_cap:
                 s["referencia"] = f"Capítulo {i}, bloque {s['chunk']}"
             sospechosos_total.extend(sospechosos_cap)
-
-            # Desagrupar traducciones para recuperar correspondencia 1:1 con nodos
-            traducciones_nodos = []
-            for traduccion, grupo in zip(traducciones_chunks, grupos):
-                traducciones_nodos.extend(separar_grupo(traduccion, len(grupo)))
 
             item_name, xhtml_bytes = aplicar_traducciones_epub(capitulo, traducciones_nodos)
             contenidos_epub[item_name] = xhtml_bytes
@@ -392,22 +381,12 @@ def main():
 
         textos = [str(n).strip() for n in nodos]
         total_palabras = sum(contar_palabras_efectivas(t) for t in textos)
+        print(f"   {total_palabras:,} palabras, {len(textos)} bloques de texto")
 
-        # Agrupar nodos en chunks para reducir llamadas a Ollama
-        grupos = agrupar_nodos(textos, args.chunk_palabras)
-        print(f"   {total_palabras:,} palabras, {len(textos)} bloques → {len(grupos)} chunks")
-
-        chunks_agrupados = [juntar_grupo(textos, g) for g in grupos]
-        traducciones_chunks, errores, sospechosos = traducir_chunks(chunks_agrupados, args.modelo, PAUSA_ENTRE_CHUNKS,
+        traducciones_nodos, errores, sospechosos = traducir_chunks(textos, args.modelo, PAUSA_ENTRE_CHUNKS,
                                                             idioma_origen, idioma_destino,
                                                             nombre_origen, nombre_destino,
-                                                            ruta_cache=ruta_cache,
-                                                            partes_por_chunk=[len(g) for g in grupos])
-
-        # Desagrupar traducciones para recuperar correspondencia 1:1 con nodos
-        traducciones_nodos = []
-        for traduccion, grupo in zip(traducciones_chunks, grupos):
-            traducciones_nodos.extend(separar_grupo(traduccion, len(grupo)))
+                                                            ruta_cache=ruta_cache)
 
         aplicar_traducciones_html(nodos, traducciones_nodos)
 
@@ -481,58 +460,40 @@ def main():
     try:
         doc, unidades = extraer_unidades(ruta_docx)
 
+        # Mergear párrafos partidos por soft-breaks (típico de PDF→DOCX vía Calibre)
+        antes = len(unidades)
+        unidades = mergear_parrafos(unidades)
+        if len(unidades) < antes:
+            print(f"   ↳ {antes - len(unidades)} fragmentos mergeados en sus párrafos contiguos")
+
+        # Partir párrafos con formato mixto (negrita + normal) en unidades separadas
+        # para que cada formato se traduzca en su propia llamada
+        antes_fmt = len(unidades)
+        unidades = desagrupar_formatos(unidades)
+        if len(unidades) > antes_fmt:
+            print(f"   ↳ {len(unidades) - antes_fmt} unidades extra por formato mixto")
+
         if not unidades:
             print("❌ No se encontraron unidades de texto traducibles.")
             sys.exit(1)
 
         textos = [u.texto for u in unidades]
         total_palabras = sum(contar_palabras_efectivas(t) for t in textos)
-        # Los párrafos con tokens ⟦N⟧ (hipervínculos/notas) NO se agrupan con ||||:
-        # la combinación de ambos marcadores en el prompt confunde al modelo y genera
-        # alucinaciones repetitivas. Se aíslan como chunks individuales, y los párrafos
-        # sin token que queden entre medio se re-agrupan normalmente.
-        grupos = agrupar_nodos(textos, args.chunk_palabras)
-        grupos_corregidos = []
-        for g in grupos:
-            if not any("⟦" in textos[i] for i in g):
-                grupos_corregidos.append(g)
-            else:
-                # Partir el grupo en subgrupos: cada párrafo con token va solo,
-                # las secuencias de párrafos sin token se mantienen agrupadas.
-                sub = []
-                for i in g:
-                    if "⟦" in textos[i]:
-                        if sub:
-                            grupos_corregidos.append(sub)
-                            sub = []
-                        grupos_corregidos.append([i])
-                    else:
-                        sub.append(i)
-                if sub:
-                    grupos_corregidos.append(sub)
-        grupos = grupos_corregidos
-        chunks = [juntar_grupo(textos, g) for g in grupos]
 
-        if args.limite and args.limite < len(chunks):
-            chunks = chunks[:args.limite]
-            grupos = grupos[:args.limite]
-            print(f"   ⚠️  Limitado a los primeros {args.limite} chunks (--limite)")
+        if args.limite and args.limite < len(textos):
+            textos = textos[:args.limite]
+            unidades = unidades[:args.limite]
+            print(f"   ⚠️  Limitado a los primeros {args.limite} bloques (--limite)")
 
-        print(f"   {total_palabras:,} palabras → {len(chunks)} chunks de ~{args.chunk_palabras} palabras c/u")
-        tiempo_estimado = len(chunks) * 10
+        print(f"   {total_palabras:,} palabras, {len(textos)} bloques de texto")
+        tiempo_estimado = len(textos) * 10
         mins = tiempo_estimado // 60
         print(f"   Tiempo estimado: ~{mins} minutos\n")
 
-        traducciones_chunks, errores, sospechosos = traducir_chunks(chunks, args.modelo, PAUSA_ENTRE_CHUNKS,
+        traducciones, errores, sospechosos = traducir_chunks(textos, args.modelo, PAUSA_ENTRE_CHUNKS,
                                                     idioma_origen, idioma_destino,
                                                     nombre_origen, nombre_destino,
-                                                    ruta_cache=ruta_cache,
-                                                    partes_por_chunk=[len(g) for g in grupos])
-
-        # Desagrupar para recuperar correspondencia 1:1 con las unidades
-        traducciones = []
-        for traduccion, grupo in zip(traducciones_chunks, grupos):
-            traducciones.extend(separar_grupo(traduccion, len(grupo)))
+                                                    ruta_cache=ruta_cache)
 
         for i, unidad in enumerate(unidades):
             if i < len(traducciones):
@@ -567,12 +528,12 @@ def main():
         print(f"\n✅ Traducción completada.")
         print(f"   Guardado en: {ruta_salida}")
         print(f"   Unidades traducidas: {len(unidades)}")
-        print(f"   Chunks procesados: {len(chunks) - len(errores)}/{len(chunks)}")
+        print(f"   Bloques procesados: {len(textos) - len(errores)}/{len(textos)}")
         if errores:
-            print(f"   ⚠️  Chunks con error (revisar manualmente): {errores}")
+            print(f"   ⚠️  Bloques con error (revisar manualmente): {errores}")
         ruta_reporte = guardar_reporte_sospechosos(ruta_salida, sospechosos)
         if ruta_reporte:
-            print(f"   👁️  {len(sospechosos)} chunk(s) con posible anomalía → {ruta_reporte.name}")
+            print(f"   👁️  {len(sospechosos)} bloque(s) con posible anomalía → {ruta_reporte.name}")
         # Limpiar caché de traducción
         if ruta_cache.exists():
             ruta_cache.unlink()

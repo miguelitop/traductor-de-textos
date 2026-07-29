@@ -2,6 +2,7 @@ import re
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
+from xml.etree.ElementTree import tostring
 
 from docx import Document
 from docx.oxml import OxmlElement
@@ -31,13 +32,14 @@ class NotaInfo:
 
 @dataclass
 class UnidadTraducible:
-    """Representa un párrafo traducible con referencia a sus runs originales."""
+    """Representa un párrafo (o parte de uno) traducible con referencia a sus runs."""
     texto: str
     parrafo: Paragraph
     traduccion: str = ""
     hyperlinks: dict = field(default_factory=dict)
     notas: dict = field(default_factory=dict)
     base_rPr: object = None
+    run_indices: list[int] | None = None  # None = todo el párrafo; lista = solo esos runs
 
 
 @dataclass
@@ -227,6 +229,116 @@ def _recorrer_unidades(parrafos, tablas, unidades: list) -> None:
                 _recorrer_unidades(celda.paragraphs, celda.tables, unidades)
 
 
+# Puntuación que indica fin de oración/párrafo completo
+_CIERRE_PATTERN = re.compile(r'[.!?:…]$|\.{3,}$')
+
+
+def _mergear_parrafos_xml(p1: Paragraph, p2: Paragraph) -> None:
+    """Mueve los runs de p2 al final de p1 y elimina p2 del documento."""
+    # Insertar un espacio entre los textos mergeados
+    space_run = OxmlElement("w:r")
+    space_t = OxmlElement("w:t")
+    space_t.text = " "
+    space_t.set(qn("xml:space"), "preserve")
+    space_run.append(space_t)
+    p1._element.append(space_run)
+
+    # Mover todos los runs de p2 a p1
+    for child in list(p2._element):
+        p1._element.append(child)
+
+    # Eliminar p2 del documento
+    parent = p2._element.getparent()
+    if parent is not None:
+        parent.remove(p2._element)
+
+
+def mergear_parrafos(unidades: list[UnidadTraducible]) -> list[UnidadTraducible]:
+    """Mergea párrafos consecutivos partidos por soft-breaks (PDF→DOCX Calibre).
+
+    Dos párrafos se mergean si el primero no termina con puntuación de cierre
+    (. ! ? : … ...) y el segundo arranca con minúscula (continuación de frase).
+    La operación modifica el XML del documento: mueve los runs del segundo
+    párrafo al primero y elimina el segundo.
+    """
+    if not unidades:
+        return []
+
+    resultado = []
+    actual = unidades[0]
+
+    for siguiente in unidades[1:]:
+        t1 = actual.texto.rstrip()
+        t2 = siguiente.texto.lstrip()
+        termina_cierre = bool(_CIERRE_PATTERN.search(t1))
+        empieza_minus = t2 and t2[0].islower()
+
+        if not termina_cierre and empieza_minus:
+            actual.texto = t1 + " " + t2
+            _mergear_parrafos_xml(actual.parrafo, siguiente.parrafo)
+        else:
+            resultado.append(actual)
+            actual = siguiente
+
+    resultado.append(actual)
+    return resultado
+
+
+def _formato_signature(run) -> str:
+    """Devuelve el XML del w:rPr del run como string para comparar formato."""
+    rPr = run._element.find(qn("w:rPr"))
+    return tostring(rPr, encoding="unicode") if rPr is not None else ""
+
+
+def desagrupar_formatos(unidades: list[UnidadTraducible]) -> list[UnidadTraducible]:
+    """Parte párrafos con formato mixto (negrita + normal) en unidades separadas.
+
+    Cada grupo de runs consecutivos con el mismo formato se traduce en su propia
+    llamada, preservando el formato sin heurística de split sobre la traducción.
+    Párrafos con hipervínculos o notas se dejan intactos.
+    """
+    resultado = []
+    for unidad in unidades:
+        if unidad.hyperlinks or unidad.notas:
+            resultado.append(unidad)
+            continue
+
+        runs = unidad.parrafo.runs
+        if len(runs) <= 1:
+            resultado.append(unidad)
+            continue
+
+        # Agrupar runs consecutivos comparando el XML de w:rPr
+        grupos = []  # [(signature, [run_indices])]
+        for i, run in enumerate(runs):
+            texto_run = (run.text or "").strip()
+            if not texto_run:
+                continue  # runs de solo whitespace se ignoran
+            sig = _formato_signature(run)
+            if grupos and grupos[-1][0] == sig:
+                grupos[-1][1].append(i)
+            else:
+                grupos.append((sig, [i]))
+
+        if len(grupos) <= 1:
+            resultado.append(unidad)
+            continue
+
+        # Crear una unidad por grupo de runs con mismo formato
+        for _sig, indices in grupos:
+            texto = " ".join((runs[i].text or "").strip() for i in indices).strip()
+            if not texto:
+                continue
+            resultado.append(UnidadTraducible(
+                texto=texto,
+                parrafo=unidad.parrafo,
+                base_rPr=unidad.base_rPr,
+                run_indices=indices,
+            ))
+
+    return resultado
+
+
 def extraer_unidades(ruta_docx: Path) -> tuple[Document, list[UnidadTraducible]]:
     """Abre un DOCX y extrae todas las unidades traducibles.
     Recursivo: cuerpo principal, tablas, y tablas anidadas dentro de celdas.
@@ -395,7 +507,7 @@ def aplicar_traducciones(unidades: list[UnidadTraducible]) -> int:
                 unidad.hyperlinks, unidad.notas, unidad.base_rPr,
             )
         else:
-            # Sin hipervínculos ni notas: lógica original (más segura, preserva formato).
+            # Sin hipervínculos ni notas.
             # Limpiar tokens ⟦N⟧ que el modelo pueda haber desplazado hasta acá desde
             # un párrafo vecino: en un párrafo sin links no significan nada y quedarían
             # como basura visible.
@@ -404,9 +516,19 @@ def aplicar_traducciones(unidades: list[UnidadTraducible]) -> int:
             runs = parrafo.runs
             if not runs:
                 continue
-            runs[0].text = texto
-            for run in runs[1:]:
-                run.text = ""
+
+            if unidad.run_indices is not None:
+                # Esta unidad solo modifica los runs que le pertenecen
+                for i, idx in enumerate(unidad.run_indices):
+                    if i == 0:
+                        runs[idx].text = texto
+                    else:
+                        runs[idx].text = ""
+            else:
+                # Párrafo homogéneo: todo al primer run (hereda su formato)
+                runs[0].text = texto
+                for run in runs[1:]:
+                    run.text = ""
 
     return fallbacks
 

@@ -28,28 +28,22 @@ def traducir_chunk(texto: str, modelo: str,
             "as-is (same brackets and number), in the same position relative to the surrounding words. "
             "Never translate, alter, space out, reorder, split, merge, or remove any token. "
         )
-    instruccion_separador = ""
-    if "||||" in texto:
-        instruccion_separador = (
-            "IMPORTANT: The text contains segment separators '||||'. "
-            "You MUST preserve each '||||' separator exactly as-is in your translation. "
-            "Translate each segment independently but keep the separators in place. "
-        )
     prompt = (
         f"You are a professional {nombre_origen} ({idioma_origen}) to {nombre_destino} ({idioma_destino}) translator. "
         f"Your goal is to accurately convey the meaning and nuances of the original "
         f"{nombre_origen} text while adhering to {nombre_destino} grammar, vocabulary, and cultural sensitivities. "
         f"Produce only the {nombre_destino} translation, without any additional explanations or commentary. "
         f"{instruccion_links}"
-        f"{instruccion_separador}"
         f"Please translate the following {nombre_origen} text into {nombre_destino}:\n\n\n"
         f"{texto}"
     )
-    # Limitar tokens de salida al doble del input para cortar alucinaciones repetitivas.
+    # Limitar tokens de salida a ~2.6× el input para dar margen de traducción
+    # sin dejar tanto espacio que induzca alucinaciones repetitivas en textos cortos.
+    # Piso 64 (frases de 1-2 palabras), techo 2048 (párrafos muy largos).
     # Usamos contar_palabras_efectivas() para que el cálculo funcione también con
     # idiomas sin espacios (chino, japonés, coreano) donde len(texto.split()) ≈ 1.
     palabras_entrada = contar_palabras_efectivas(texto)
-    max_tokens = max(256, int(palabras_entrada * 2 * 1.3))
+    max_tokens = max(64, min(int(palabras_entrada * 2.6), 2048))
 
     response = ollama_chat_timeout(
         model=modelo,
@@ -157,14 +151,10 @@ def traducir_chunks(chunks: list[str], modelo: str, pausa: float,
                     idioma_origen: str = "en", idioma_destino: str = "es",
                     nombre_origen: str = "English", nombre_destino: str = "Spanish",
                     ruta_cache: Optional[Path] = None,
-                    partes_por_chunk: Optional[list[int]] = None,
                     ) -> tuple[list[str], list[int], list[dict]]:
     """Traduce una lista de chunks con barra de progreso y reintentos.
     Devuelve (traducciones, lista_de_chunks_con_error, chunks_sospechosos).
     Cada sospechoso es un dict con: chunk, original, traduccion, anomalias.
-
-    Si se proporciona partes_por_chunk, se valida que cada traducción
-    conserve la cantidad correcta de separadores ||||; si no, se reintenta.
     """
     # ── Cargar caché si existe (sin preguntar — ya se resolvió antes) ──
     cache: dict[str, str] = {}
@@ -186,24 +176,9 @@ def traducir_chunks(chunks: list[str], modelo: str, pausa: float,
             # ── Verificar caché ──
             hash_chunk = hashlib.sha256(chunk.encode()).hexdigest()
             if hash_chunk in cache:
-                traduccion_cache = cache[hash_chunk]
-                # Validar que la traducción cacheada respete los separadores
-                if partes_por_chunk and "||||" in chunk:
-                    partes_recibidas = len(traduccion_cache.split("||||"))
-                    partes_esperadas = partes_por_chunk[i]
-                    if abs(partes_recibidas - partes_esperadas) > 2:
-                        tqdm.write(f"⚠️  Chunk {i+1}: caché inválido (separadores: "
-                                   f"{partes_recibidas} vs {partes_esperadas}). Reintentando.")
-                        del cache[hash_chunk]
-                        # cae al loop de reintentos
-                    else:
-                        traducciones.append(traduccion_cache)
-                        barra.update(1)
-                        continue
-                else:
-                    traducciones.append(traduccion_cache)
-                    barra.update(1)
-                    continue
+                traducciones.append(cache[hash_chunk])
+                barra.update(1)
+                continue
 
             exito = False
             for intento in range(1, REINTENTOS_MAX + 1):
@@ -211,20 +186,6 @@ def traducir_chunks(chunks: list[str], modelo: str, pausa: float,
                     traduccion = traducir_chunk(chunk, modelo,
                                                 idioma_origen, idioma_destino,
                                                 nombre_origen, nombre_destino)
-
-                    # Validar que el modelo haya respetado los separadores ||||
-                    # Solo reintentar si la discrepancia es grande (>2); las
-                    # pequeñas las maneja separar_grupo() con su fallback.
-                    if partes_por_chunk and "||||" in chunk:
-                        partes_recibidas = len(traduccion.split("||||"))
-                        partes_esperadas = partes_por_chunk[i]
-                        if abs(partes_recibidas - partes_esperadas) > 2:
-                            raise ValueError(
-                                f"El modelo no respetó los separadores ||||: "
-                                f"se esperaban {partes_esperadas} partes pero "
-                                f"se recibieron {partes_recibidas}."
-                            )
-
                     traducciones.append(traduccion)
                     exito = True
 

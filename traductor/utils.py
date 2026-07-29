@@ -93,6 +93,34 @@ def contar_palabras_efectivas(texto: str) -> int:
     return max(1, palabras_split)
 
 
+def mergear_fragmentos(textos: list[str]) -> list[str]:
+    """Mergea fragmentos partidos por soft-breaks (típico de PDF→DOCX vía Calibre).
+
+    Dos fragmentos consecutivos se mergean si:
+    - El primero NO termina con . ! ? : … o puntos suspensivos
+    - El segundo arranca con minúscula (continuación de frase, no nuevo párrafo/ítem)
+    """
+    if not textos:
+        return []
+
+    resultado = []
+    buffer = textos[0]
+
+    for texto in textos[1:]:
+        t2_stripped = texto.lstrip()
+        termina_cierre = bool(re.search(r'[.!?:…]$|\.{3,}$', buffer.rstrip()))
+        empieza_minus = t2_stripped and t2_stripped[0].islower()
+
+        if not termina_cierre and empieza_minus:
+            buffer += " " + texto
+        else:
+            resultado.append(buffer)
+            buffer = texto
+
+    resultado.append(buffer)
+    return resultado
+
+
 def ollama_chat_timeout(*args, timeout_secs=180, fallback_timeout=300, **kwargs):
     """Wrapper para ollama.chat con timeout.
 
