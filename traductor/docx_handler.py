@@ -442,33 +442,6 @@ def guardar_docx(doc: Document, ruta_salida: Path):
 
 # --- Aplicación de captions traducidos a imágenes ---
 
-# Conversión: 1 dxa (twentieth-of-a-point) = 635 EMU
-_EMU_POR_DXA = 635
-
-
-def _emu_a_dxa(emu: int) -> int:
-    return max(1, emu // _EMU_POR_DXA)
-
-
-def _crear_bordes_invisibles() -> OxmlElement:
-    bordes = OxmlElement("w:tblBorders")
-    for lado in ("top", "left", "bottom", "right", "insideH", "insideV"):
-        b = OxmlElement(f"w:{lado}")
-        b.set(qn("w:val"), "nil")
-        bordes.append(b)
-    return bordes
-
-
-def _crear_celda(ancho_dxa: int) -> OxmlElement:
-    tc = OxmlElement("w:tc")
-    tcPr = OxmlElement("w:tcPr")
-    tcW = OxmlElement("w:tcW")
-    tcW.set(qn("w:w"), str(ancho_dxa))
-    tcW.set(qn("w:type"), "dxa")
-    tcPr.append(tcW)
-    tc.append(tcPr)
-    return tc
-
 
 def _crear_parrafo_caption(texto: str) -> OxmlElement:
     """Crea un párrafo en cursiva, tamaño 90%, centrado, con el caption."""
@@ -502,61 +475,6 @@ def _crear_parrafo_caption(texto: str) -> OxmlElement:
     r.append(t)
     p.append(r)
     return p
-
-
-def _construir_tabla_imagen_caption(imagen_run_clon, ancho_emu: int,
-                                     alineacion: str, texto_caption: str) -> OxmlElement:
-    """Construye una tabla 1×2 con bordes invisibles: imagen arriba, caption abajo."""
-    ancho_dxa = _emu_a_dxa(ancho_emu) if ancho_emu else 6000
-
-    tbl = OxmlElement("w:tbl")
-    tblPr = OxmlElement("w:tblPr")
-
-    tblW = OxmlElement("w:tblW")
-    tblW.set(qn("w:w"), str(ancho_dxa))
-    tblW.set(qn("w:type"), "dxa")
-    tblPr.append(tblW)
-
-    jc = OxmlElement("w:jc")
-    jc.set(qn("w:val"), alineacion)
-    tblPr.append(jc)
-
-    tblPr.append(_crear_bordes_invisibles())
-
-    tblLayout = OxmlElement("w:tblLayout")
-    tblLayout.set(qn("w:type"), "fixed")
-    tblPr.append(tblLayout)
-
-    tbl.append(tblPr)
-
-    tblGrid = OxmlElement("w:tblGrid")
-    gridCol = OxmlElement("w:gridCol")
-    gridCol.set(qn("w:w"), str(ancho_dxa))
-    tblGrid.append(gridCol)
-    tbl.append(tblGrid)
-
-    # Fila 1: imagen
-    tr1 = OxmlElement("w:tr")
-    tc1 = _crear_celda(ancho_dxa)
-    p1 = OxmlElement("w:p")
-    p1_pPr = OxmlElement("w:pPr")
-    p1_jc = OxmlElement("w:jc")
-    p1_jc.set(qn("w:val"), "center")
-    p1_pPr.append(p1_jc)
-    p1.append(p1_pPr)
-    p1.append(imagen_run_clon)
-    tc1.append(p1)
-    tr1.append(tc1)
-    tbl.append(tr1)
-
-    # Fila 2: caption
-    tr2 = OxmlElement("w:tr")
-    tc2 = _crear_celda(ancho_dxa)
-    tc2.append(_crear_parrafo_caption(texto_caption))
-    tr2.append(tc2)
-    tbl.append(tr2)
-
-    return tbl
 
 
 def _parrafo_solo_tiene_runs_vacios(elem_p) -> bool:

@@ -107,8 +107,8 @@ Si se usa la app de Ollama (icono en la barra de menu) en lugar de `ollama serve
 
 Que hace cada una:
 
-- `OLLAMA_FLASH_ATTENTION=1` — atencion mas eficiente en memoria; mejora notable en contextos largos (modelo de vision).
-- `OLLAMA_KV_CACHE_TYPE=q8_0` — cuantiza el KV cache a 8 bits y libera ~50% de memoria. Solo tiene efecto si Flash Attention esta activo. Critico en Macs con RAM justa cuando se usan los dos modelos a la vez.
+- `OLLAMA_FLASH_ATTENTION=1` — atencion mas eficiente en memoria; mejora notable en contextos largos.
+- `OLLAMA_KV_CACHE_TYPE=q8_0` — cuantiza el KV cache a 8 bits y libera ~50% de memoria. Solo tiene efecto si Flash Attention esta activo. Critico en Macs con RAM justa.
 - `OLLAMA_KEEP_ALIVE=30m` — mantiene el modelo cargado en memoria entre llamadas. Sin esto, Ollama puede descargarlo y recargarlo, agregando 10-30 s de pausa por switch.
 
 Para verificar que se aplicaron, en `~/.ollama/logs/server.log` deberia figurar `flash_attention = 1` al cargar el modelo.
