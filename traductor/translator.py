@@ -191,7 +191,7 @@ def traducir_chunks(chunks: list[str], modelo: str, pausa: float,
                 if partes_por_chunk and "||||" in chunk:
                     partes_recibidas = len(traduccion_cache.split("||||"))
                     partes_esperadas = partes_por_chunk[i]
-                    if partes_recibidas != partes_esperadas:
+                    if abs(partes_recibidas - partes_esperadas) > 2:
                         tqdm.write(f"⚠️  Chunk {i+1}: caché inválido (separadores: "
                                    f"{partes_recibidas} vs {partes_esperadas}). Reintentando.")
                         del cache[hash_chunk]
@@ -213,10 +213,12 @@ def traducir_chunks(chunks: list[str], modelo: str, pausa: float,
                                                 nombre_origen, nombre_destino)
 
                     # Validar que el modelo haya respetado los separadores ||||
+                    # Solo reintentar si la discrepancia es grande (>2); las
+                    # pequeñas las maneja separar_grupo() con su fallback.
                     if partes_por_chunk and "||||" in chunk:
                         partes_recibidas = len(traduccion.split("||||"))
                         partes_esperadas = partes_por_chunk[i]
-                        if partes_recibidas != partes_esperadas:
+                        if abs(partes_recibidas - partes_esperadas) > 2:
                             raise ValueError(
                                 f"El modelo no respetó los separadores ||||: "
                                 f"se esperaban {partes_esperadas} partes pero "
