@@ -338,7 +338,8 @@ def main():
             traducciones_chunks, errores, sospechosos_cap = traducir_chunks(chunks_agrupados, args.modelo, PAUSA_ENTRE_CHUNKS,
                                                             idioma_origen, idioma_destino,
                                                             nombre_origen, nombre_destino,
-                                                            ruta_cache=ruta_cache)
+                                                            ruta_cache=ruta_cache,
+                                                            partes_por_chunk=[len(g) for g in grupos])
             errores_total.extend(errores)
             for s in sospechosos_cap:
                 s["referencia"] = f"Capítulo {i}, bloque {s['chunk']}"
@@ -400,7 +401,8 @@ def main():
         traducciones_chunks, errores, sospechosos = traducir_chunks(chunks_agrupados, args.modelo, PAUSA_ENTRE_CHUNKS,
                                                             idioma_origen, idioma_destino,
                                                             nombre_origen, nombre_destino,
-                                                            ruta_cache=ruta_cache)
+                                                            ruta_cache=ruta_cache,
+                                                            partes_por_chunk=[len(g) for g in grupos])
 
         # Desagrupar traducciones para recuperar correspondencia 1:1 con nodos
         traducciones_nodos = []
@@ -524,7 +526,8 @@ def main():
         traducciones_chunks, errores, sospechosos = traducir_chunks(chunks, args.modelo, PAUSA_ENTRE_CHUNKS,
                                                     idioma_origen, idioma_destino,
                                                     nombre_origen, nombre_destino,
-                                                    ruta_cache=ruta_cache)
+                                                    ruta_cache=ruta_cache,
+                                                    partes_por_chunk=[len(g) for g in grupos])
 
         # Desagrupar para recuperar correspondencia 1:1 con las unidades
         traducciones = []

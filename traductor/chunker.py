@@ -4,6 +4,7 @@ Funciones para agrupar textos en chunks optimizando llamadas al traductor.
 
 from tqdm import tqdm
 
+from .config import REINTENTOS_MAX
 from .utils import contar_palabras_efectivas
 
 SEPARADOR = "\n||||\n"
@@ -67,6 +68,6 @@ def separar_grupo(traduccion: str, cantidad: int) -> list[str]:
             raise ValueError(
                 f"El modelo no respetó los separadores ||||: "
                 f"se esperaban {cantidad} partes pero se recibieron {len(partes)}. "
-                f"Reintentando chunk completo."
+                f"El chunk ya fue reintentado {REINTENTOS_MAX} veces sin éxito."
             )
     return partes
