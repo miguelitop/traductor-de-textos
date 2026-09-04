@@ -1,0 +1,16 @@
+# Normalizar finales de línea: LF en el repo, LF en el disco.
+* text=auto eol=lf
+
+# Scripts que corren en WSL/Linux: nunca CRLF.
+*.sh text eol=lf
+
+# Binarios: sin conversión ni diff de texto.
+*.docx binary
+*.doc  binary
+*.epub binary
+*.pdf  binary
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.webp binary
