@@ -29,7 +29,7 @@ except ImportError:
     print("❌ Falta instalar: pip install tqdm")
     sys.exit(1)
 
-from .config import (MODELO_DEFAULT, PAUSA_ENTRE_CHUNKS,
+from .config import (MODELO_DEFAULT, MODELO_VISION_DEFAULT, PAUSA_ENTRE_CHUNKS,
                      FUENTE_DEFAULT, TAMANO_FUENTE_DEFAULT)
 from .converter import convertir_a_docx, convertir_con_calibre
 from .utils import normalizar_path_entrada
@@ -162,6 +162,12 @@ def main():
         help=f"Modelo Ollama a usar (default: {MODELO_DEFAULT})"
     )
     parser.add_argument(
+        "--modelo-vision", default=MODELO_VISION_DEFAULT,
+        help=f"Modelo de vision para el OCR de --traducir-imagenes "
+             f"(default: {MODELO_VISION_DEFAULT}). El modelo de traduccion no "
+             f"sirve para transcribir: son dos modelos distintos a proposito."
+    )
+    parser.add_argument(
         "--limite", type=int, default=None, metavar="N",
         help="Traducir solo los primeros N bloques de texto"
     )
@@ -204,6 +210,7 @@ def main():
     # Modo solo actualización de modelo (sin archivo de entrada)
     if args.actualizar_modelo and not args.entrada:
         verificar_modelo(args.modelo, actualizar=True)
+        verificar_modelo(args.modelo_vision, actualizar=True)
         return
 
     if not args.entrada:
@@ -290,6 +297,8 @@ def main():
     print(f"\n⏱️  Inicio: {inicio.strftime('%Y-%m-%d %H:%M:%S')}")
 
     verificar_modelo(args.modelo, actualizar=args.actualizar_modelo)
+    if args.traducir_imagenes or args.actualizar_modelo:
+        verificar_modelo(args.modelo_vision, actualizar=args.actualizar_modelo)
 
     print(f"📖 Leyendo: {ruta_entrada.name}")
 
@@ -316,7 +325,7 @@ def main():
             if imagenes_epub:
                 print(f"\n🖼️  Imágenes con posible texto: {len(imagenes_epub)}")
                 con_texto, sin_texto, errs_img = traducir_imagenes(
-                    imagenes_epub, args.modelo,
+                    imagenes_epub, args.modelo, args.modelo_vision,
                     idioma_origen, idioma_destino,
                     nombre_origen, nombre_destino,
                 )
@@ -398,7 +407,7 @@ def main():
             if imagenes_html:
                 print(f"\n🖼️  Imágenes con posible texto: {len(imagenes_html)}")
                 con_texto, sin_texto, errs_img = traducir_imagenes(
-                    imagenes_html, args.modelo,
+                    imagenes_html, args.modelo, args.modelo_vision,
                     idioma_origen, idioma_destino,
                     nombre_origen, nombre_destino,
                 )
@@ -514,7 +523,7 @@ def main():
             if imagenes:
                 print(f"\n🖼️  Imágenes con posible texto: {len(imagenes)}")
                 con_texto, sin_texto, errs_img = traducir_imagenes(
-                    imagenes, args.modelo,
+                    imagenes, args.modelo, args.modelo_vision,
                     idioma_origen, idioma_destino,
                     nombre_origen, nombre_destino,
                 )

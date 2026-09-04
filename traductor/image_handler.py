@@ -1,17 +1,28 @@
 """
-Traduce texto embebido en imágenes usando un modelo de visión vía Ollama.
+Traduce texto embebido en imágenes usando dos modelos vía Ollama.
 
-Se hace en dos pasos, no en uno:
-  1. Llamada de visión que sólo transcribe el texto visible, sin traducir.
-  2. El texto transcripto pasa por traducir_chunk(), el mismo camino que traduce
-     el cuerpo del documento.
+Se hace en dos pasos, con un modelo distinto en cada uno:
+  1. OCR: un modelo de visión (`modelo_vision`) transcribe el texto visible,
+     sin traducir.
+  2. Traducción: el texto transcripto pasa por traducir_chunk() con el modelo
+     de traducción, el mismo camino que traduce el cuerpo del documento.
 
-Pedirle a la vez OCR y traducción hacía que el modelo transcribiera sin traducir
-—translategemma es un fine-tune de traducción de texto, su rama de visión no pasó
-por ese fine-tune— y los captions salían en el idioma de origen.
+Por qué dos modelos y no uno
+----------------------------
+translategemma es un fine-tune de traducción de texto: su rama de visión no
+pasó por ese fine-tune ni por instruction-tuning, y no sirve para OCR. Medido
+sobre una imagen sintética trivial (título + 3 etiquetas + fuente, negro sobre
+blanco), translategemma:12b transcribió sólo 2 de 5 elementos; qwen2.5vl:7b,
+los 5. Sobre imágenes densas reales el modo de falla es peor: en vez de leer la
+imagen devuelve el prompt de OCR palabra por palabra, y el paso 2 lo traduce
+obedientemente, produciendo captions que son las instrucciones en español.
+
+De ahí las dos defensas de este módulo: usar un modelo de visión de verdad, y
+filtrar el eco del prompt por si aparece igual (_filtrar_eco_prompt).
 
 API pública:
-  - traducir_imagen(bytes, ...)  → str | None    (None = sin texto / descartable)
+  - traducir_imagen(bytes, modelo, modelo_vision, ...)  → str | None
+    (None = sin texto / descartable)
 """
 from __future__ import annotations
 
@@ -44,23 +55,87 @@ def _es_descartable(imagen_bytes: bytes) -> bool:
 
 
 def _construir_prompt_ocr() -> str:
-    """Prompt de transcripción. La traducción se hace después, en un paso aparte."""
+    """Instrucciones de transcripción. Van como system, no junto a la imagen.
+
+    Se mandan aparte del turno del usuario justamente para que el modelo no las
+    confunda con contenido a transcribir. Corto a propósito: cuanto menos texto
+    haya en el prompt, menos hay para que el modelo devuelva como eco.
+    """
     return (
-        "Transcribe every piece of text visible in this image, exactly as written. "
-        "Include titles, labels, axis names, legends, captions and footnotes. "
-        "One line per distinct text element. Do not translate, explain or comment. "
-        "If the image contains NO readable text, respond with an empty string."
+        "Transcribe the text visible in this image, exactly as written, "
+        "one line per distinct text element. "
+        "Do not translate, explain or comment. "
+        "If there is no readable text, respond with nothing."
     )
+
+
+PROMPT_USUARIO_OCR = "Transcribe the text in this image."
 
 
 def _llamar_vision(imagen_bytes: bytes, modelo: str, prompt: str) -> str:
     """Una llamada a Ollama-vision. Devuelve el texto crudo del modelo."""
     response = ollama_chat_timeout(
         model=modelo,
-        messages=[{"role": "user", "content": prompt, "images": [imagen_bytes]}],
+        messages=[
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": PROMPT_USUARIO_OCR,
+             "images": [imagen_bytes]},
+        ],
         options={"temperature": 0.1, "num_predict": 1024},
     )
     return response["message"]["content"].strip()
+
+
+def _normalizar(texto: str) -> str:
+    """Minúsculas, sin puntuación y con espacios colapsados, para comparar."""
+    return re.sub(r"[^a-z0-9áéíóúñü ]", "", texto.lower()).strip()
+
+
+def _frases_prompt() -> list[str]:
+    """Las frases del prompt de OCR, normalizadas, para detectar el eco."""
+    crudo = _construir_prompt_ocr() + " " + PROMPT_USUARIO_OCR
+    frases = [_normalizar(f) for f in re.split(r"[.\n]", crudo)]
+    return [f for f in frases if len(f) >= 15]
+
+
+def _ngramas(texto_normalizado: str, n: int = 5) -> set[str]:
+    """Todos los n-gramas de palabras de un texto ya normalizado."""
+    palabras = texto_normalizado.split()
+    return {" ".join(palabras[i:i + n]) for i in range(len(palabras) - n + 1)}
+
+
+def _es_eco_del_prompt(linea: str) -> bool:
+    """True si la línea es el prompt de OCR devuelto como si fuera contenido.
+
+    El modelo de visión, cuando no puede leer la imagen, a veces repite las
+    instrucciones en vez de transcribir. Comparamos por n-gramas de 5 palabras
+    y no por igualdad, porque el eco casi nunca vuelve limpio: llega cortado a
+    mitad de frase por num_predict, o con una etiqueta inventada delante
+    ("Text: One line per distinct text element"), y en los dos casos deja de
+    ser subcadena del prompt.
+
+    Cinco palabras seguidas es un umbral seguro: ninguna etiqueta real de un
+    gráfico coincide en cinco palabras consecutivas con una instrucción.
+    Las colas muy cortas ("If the") se atrapan aparte, por prefijo.
+    """
+    n = _normalizar(linea)
+    if not n:
+        return False
+    n_prompt = _normalizar(_construir_prompt_ocr() + " " + PROMPT_USUARIO_OCR)
+    if _ngramas(n) & _ngramas(n_prompt):
+        return True
+    if len(n) >= 12 and n in n_prompt:
+        return True
+    # Umbral 6: corto para atrapar colas truncadas como "if the", largo para no
+    # tocar etiquetas legítimas de un gráfico ("US", "Asia", "2024").
+    if len(n) >= 6 and any(f.startswith(n) for f in _frases_prompt()):
+        return True
+    return False
+
+
+def _filtrar_eco_prompt(texto: str) -> str:
+    """Saca de la transcripción las líneas que son eco del prompt."""
+    return "\n".join(l for l in texto.splitlines() if not _es_eco_del_prompt(l))
 
 
 def _es_repeticion_loop(texto: str) -> bool:
@@ -107,7 +182,7 @@ def _limpiar_resultado(texto: str) -> str:
     return "\n".join(salida)
 
 
-def traducir_imagen(imagen_bytes: bytes, modelo: str,
+def traducir_imagen(imagen_bytes: bytes, modelo: str, modelo_vision: str,
                     idioma_origen: str = "en",
                     idioma_destino: str = "es",
                     nombre_origen: str = "English",
@@ -115,6 +190,9 @@ def traducir_imagen(imagen_bytes: bytes, modelo: str,
                     cache: dict[str, str | None] | None = None,
                     ) -> str | None:
     """Traduce el texto embebido en una imagen: primero OCR, después traducción.
+
+    `modelo_vision` hace el OCR; `modelo` traduce el resultado. Son distintos a
+    propósito (ver el docstring del módulo).
 
     Devuelve:
       - str con la traducción (sin prefijo) si la imagen tiene texto
@@ -132,7 +210,7 @@ def traducir_imagen(imagen_bytes: bytes, modelo: str,
     if cache is not None and h in cache:
         return cache[h]
 
-    crudo = _llamar_vision(imagen_bytes, modelo, _construir_prompt_ocr())
+    crudo = _llamar_vision(imagen_bytes, modelo_vision, _construir_prompt_ocr())
 
     # Resultado vacío → sin texto
     if not crudo.strip():
@@ -146,9 +224,11 @@ def traducir_imagen(imagen_bytes: bytes, modelo: str,
             cache[h] = None
         return None
 
-    # Deduplicamos sobre la transcripción, que es donde el modelo repite
+    # Primero el eco del prompt: hay que sacarlo ANTES de deduplicar, porque las
+    # copias truncadas no son idénticas entre sí y _limpiar_resultado() no las ve
+    # como duplicados. Después deduplicamos, que es donde el modelo repite
     # (mismo título una vez por panel del gráfico, por ejemplo).
-    transcripcion = _limpiar_resultado(crudo)
+    transcripcion = _limpiar_resultado(_filtrar_eco_prompt(crudo))
     if not transcripcion:
         if cache is not None:
             cache[h] = None

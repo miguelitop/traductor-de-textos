@@ -240,7 +240,7 @@ def traducir_chunks(chunks: list[str], modelo: str, pausa: float,
     return traducciones, errores, sospechosos
 
 
-def traducir_imagenes(imagenes: list, modelo: str,
+def traducir_imagenes(imagenes: list, modelo: str, modelo_vision: str,
                       idioma_origen: str = "en",
                       idioma_destino: str = "es",
                       nombre_origen: str = "English",
@@ -250,6 +250,8 @@ def traducir_imagenes(imagenes: list, modelo: str,
     Cada elemento de `imagenes` debe ser un objeto con atributos:
       - imagen_bytes: bytes
       - traduccion: str | None  (se setea con la traducción o se deja None)
+
+    `modelo_vision` transcribe (OCR) y `modelo` traduce esa transcripción.
 
     Cachea por hash de bytes para no procesar duplicados.
     Devuelve (procesadas_con_texto, sin_texto, errores).
@@ -268,7 +270,7 @@ def traducir_imagenes(imagenes: list, modelo: str,
             for intento in range(1, REINTENTOS_MAX + 1):
                 try:
                     resultado = traducir_imagen(
-                        img.imagen_bytes, modelo,
+                        img.imagen_bytes, modelo, modelo_vision,
                         idioma_origen, idioma_destino,
                         nombre_origen, nombre_destino, cache,
                     )

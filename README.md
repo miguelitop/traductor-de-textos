@@ -33,6 +33,9 @@ pip install -r requirements.txt
 
 # Descargar el modelo de traduccion (primera vez)
 ollama pull translategemma:12b
+
+# Solo si se va a usar --traducir-imagenes: modelo de vision para el OCR
+ollama pull qwen2.5vl:7b
 ```
 
 ## Uso
@@ -58,6 +61,7 @@ python traductor-de-textos.py pagina.html --de-idioma en --a-idioma es
 | `--de-idioma CODIGO` | Idioma de origen (codigo de 2 letras, ej: `en`). Sin esto, muestra selector interactivo |
 | `--a-idioma CODIGO` | Idioma de destino (codigo de 2 letras, ej: `es`). Sin esto, muestra selector interactivo |
 | `--modelo MODELO` | Modelo Ollama a usar (default: `translategemma:12b`) |
+| `--modelo-vision MODELO` | Modelo de vision para el OCR de `--traducir-imagenes` (default: `qwen2.5vl:7b`) |
 | `--chunk-palabras N` | Palabras por chunk (default: `350`) |
 | `--salida ARCHIVO` | Archivo de salida (default: `<entrada>_<idioma>.<ext>`) |
 | `--fuente NOMBRE` | Fuente para el DOCX de salida (default: conservar original) |
@@ -65,7 +69,7 @@ python traductor-de-textos.py pagina.html --de-idioma en --a-idioma es
 | `--actualizar-modelo` | Verificar si hay una version mas nueva del modelo en Ollama |
 | `--revisar` | EPUB: exportar capitulos traducidos como HTML para revision manual |
 | `--desde-revision CARPETA` | EPUB: generar EPUB final desde HTMLs corregidos manualmente |
-| `--traducir-imagenes` | Tambien traducir el texto dentro de las imagenes (OCR + traduccion en un solo paso). Agrega la traduccion como caption debajo de cada imagen con texto. |
+| `--traducir-imagenes` | Tambien traducir el texto dentro de las imagenes: OCR con el modelo de vision, traduccion con el de traduccion. Agrega la traduccion como caption debajo de cada imagen con texto. |
 
 ## Ejemplos
 
@@ -113,14 +117,25 @@ Que hace cada una:
 
 Para verificar que se aplicaron, en `~/.ollama/logs/server.log` deberia figurar `flash_attention = 1` al cargar el modelo.
 
-### Macs con poca RAM
+### Equipos con poca RAM
 
-Con 16-18 GB de RAM, `translategemma:12b` (~8 GB) deja margen suficiente para el sistema y otras aplicaciones. Si se necesita aún más holgura, usar la variante de 4B:
+Con `--traducir-imagenes` hay **dos modelos cargados a la vez**, y conviene que entren los dos: si no, Ollama descarga y recarga uno en cada switch, agregando 10-30 s por imagen.
+
+| Combinacion | Residente |
+|-------------|-----------|
+| `translategemma:12b` + `qwen2.5vl:7b` | ~14 GB |
+| `translategemma:4b` + `qwen2.5vl:7b` | ~9 GB |
+
+Con 24 GB o mas (de VRAM en placas dedicadas, o de memoria unificada en Apple Silicon) entran los dos con margen: usar `translategemma:12b`, que traduce mejor. En Macs, tener en cuenta que solo ~75% de la memoria unificada queda disponible para la GPU.
+
+Con 16-18 GB conviene la variante de 4B, que pierde matices y naturalidad pero evita el swap:
 
 ```bash
 ollama pull translategemma:4b
 python traductor-de-textos.py informe.docx --modelo translategemma:4b --traducir-imagenes
 ```
+
+Traduciendo solo texto (sin `--traducir-imagenes`) el modelo de vision no se carga, y `translategemma:12b` (~8 GB) entra comodo tambien en 16 GB.
 
 ## Notas
 
@@ -129,4 +144,5 @@ python traductor-de-textos.py informe.docx --modelo translategemma:4b --traducir
 - Los archivos EPUB preservan imagenes, estilos y estructura de capitulos.
 - Para HTML, las imagenes se redimensionan al 75% del ancho de pagina en el DOCX resultante.
 - Al mover o renombrar la carpeta del proyecto, hay que recrear el `venv` (`python3 -m venv venv`).
-- `--traducir-imagenes` hace dos llamadas al modelo por imagen (una de vision para transcribir el texto, otra para traducirlo) y agrega ~20 segundos por imagen (12-40 segun cuanto texto tenga). Usa el mismo modelo de traduccion que el texto. El caption se inserta debajo de cada imagen, ajustado a su ancho y alineacion. Algunas imagenes con texto fino (graficos de linea con etiquetas chicas) pueden no ser detectadas — en ese caso no se agrega caption.
+- `--traducir-imagenes` hace dos llamadas por imagen, a **dos modelos distintos**: primero `--modelo-vision` transcribe el texto (OCR), despues `--modelo` traduce esa transcripcion. Agrega ~20 segundos por imagen (12-40 segun cuanto texto tenga). El caption se inserta debajo de cada imagen, ajustado a su ancho y alineacion. Algunas imagenes con texto fino (graficos de linea con etiquetas chicas) pueden no ser detectadas — en ese caso no se agrega caption.
+- El OCR necesita un modelo de vision aparte: `translategemma` es un fine-tune de traduccion de texto y su rama de vision no sirve para transcribir. Sobre una imagen sintetica trivial (titulo + 3 etiquetas + fuente) `translategemma:12b` transcribio 2 de 5 elementos y `qwen2.5vl:7b` los 5; sobre imagenes densas, el primero llega a devolver el prompt de OCR en vez del contenido. El modelo de vision solo se descarga y verifica si se usa `--traducir-imagenes`.

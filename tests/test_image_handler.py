@@ -7,6 +7,8 @@ from PIL import Image
 from traductor.image_handler import (
     _construir_prompt_ocr,
     _es_descartable,
+    _es_eco_del_prompt,
+    _filtrar_eco_prompt,
     _limpiar_resultado,
 )
 
@@ -91,3 +93,56 @@ def test_construir_prompt_ocr_sin_idiomas():
 def test_construir_prompt_ocr_sin_sentinel():
     """El prompt no debe contener el sentinel [NO_TEXT]."""
     assert "[NO_TEXT]" not in _construir_prompt_ocr()
+
+
+# ---------------------------------------------------------------------------
+# _es_eco_del_prompt / _filtrar_eco_prompt
+#
+# Los casos de eco son transcripciones reales que devolvio el modelo de vision
+# en vez de leer la imagen (ver docstring del modulo).
+# ---------------------------------------------------------------------------
+
+def test_eco_prompt_copia_entera():
+    """El prompt completo devuelto como una sola linea es eco."""
+    assert _es_eco_del_prompt(_construir_prompt_ocr()) is True
+
+
+def test_eco_prompt_copia_truncada():
+    """Copia cortada a mitad de frase por num_predict: sigue siendo eco."""
+    truncada = "Transcribe the text visible in this image, exactly as writ"
+    assert _es_eco_del_prompt(truncada) is True
+
+
+def test_eco_prompt_con_etiqueta_inventada():
+    """El modelo antepone una etiqueta propia ('Text:') a la instruccion."""
+    assert _es_eco_del_prompt("Text: One line per distinct text element.") is True
+    assert _es_eco_del_prompt("Text: Do not translate, explain or comment.") is True
+
+
+def test_eco_prompt_cola_corta():
+    """Cola de una segunda copia cortada casi al empezar."""
+    assert _es_eco_del_prompt("If there") is True
+
+
+def test_eco_prompt_no_toca_contenido_legitimo():
+    """Etiquetas reales de un grafico no se confunden con el prompt."""
+    for linea in ("US", "Asia", "2024", "United States", "Big Tech Revenue",
+                  "Source: Bloomberg, 2024", "Revenue by region, in billions"):
+        assert _es_eco_del_prompt(linea) is False, linea
+
+
+def test_filtrar_eco_conserva_solo_lo_real():
+    """Caso real: del eco solo sobrevive el texto que estaba en la imagen."""
+    crudo = (
+        "Transcribe the text visible in this image, exactly as written, "
+        "one line per distinct text element. Do not translate, explain or comment.\n"
+        "US\n"
+        "Transcribe the text visible in this image, exactly as writ"
+    )
+    assert _filtrar_eco_prompt(crudo) == "US"
+
+
+def test_filtrar_eco_sin_eco_no_cambia_nada():
+    """Una transcripcion limpia pasa intacta."""
+    limpio = "Big Tech Revenue\nUnited States\nEurope\nAsia"
+    assert _filtrar_eco_prompt(limpio) == limpio
