@@ -484,7 +484,9 @@ def main():
         if len(unidades) > antes_fmt:
             print(f"   ↳ {len(unidades) - antes_fmt} unidades extra por formato mixto")
 
-        if not unidades:
+        # Un DOCX de solo imagenes no tiene texto, pero con --traducir-imagenes
+        # sigue habiendo trabajo que hacer: no es un error.
+        if not unidades and not args.traducir_imagenes:
             print("❌ No se encontraron unidades de texto traducibles.")
             sys.exit(1)
 
@@ -496,26 +498,30 @@ def main():
             unidades = unidades[:args.limite]
             print(f"   ⚠️  Limitado a los primeros {args.limite} bloques (--limite)")
 
-        print(f"   {total_palabras:,} palabras, {len(textos)} bloques de texto")
-        tiempo_estimado = len(textos) * 10
-        mins = tiempo_estimado // 60
-        print(f"   Tiempo estimado: ~{mins} minutos\n")
+        errores, sospechosos = [], []
+        if not textos:
+            print("   Sin texto traducible: se procesan solo las imágenes.")
+        else:
+            print(f"   {total_palabras:,} palabras, {len(textos)} bloques de texto")
+            tiempo_estimado = len(textos) * 10
+            mins = tiempo_estimado // 60
+            print(f"   Tiempo estimado: ~{mins} minutos\n")
 
-        traducciones, errores, sospechosos = traducir_chunks(textos, args.modelo, PAUSA_ENTRE_CHUNKS,
-                                                    idioma_origen, idioma_destino,
-                                                    nombre_origen, nombre_destino,
-                                                    ruta_cache=ruta_cache)
+            traducciones, errores, sospechosos = traducir_chunks(textos, args.modelo, PAUSA_ENTRE_CHUNKS,
+                                                        idioma_origen, idioma_destino,
+                                                        nombre_origen, nombre_destino,
+                                                        ruta_cache=ruta_cache)
 
-        for i, unidad in enumerate(unidades):
-            if i < len(traducciones):
-                unidad.traduccion = traducciones[i]
-            else:
-                unidad.traduccion = unidad.texto
+            for i, unidad in enumerate(unidades):
+                if i < len(traducciones):
+                    unidad.traduccion = traducciones[i]
+                else:
+                    unidad.traduccion = unidad.texto
 
-        fallbacks_links = aplicar_traducciones(unidades)
-        if fallbacks_links:
-            print(f"   ⚠️  {fallbacks_links} párrafo(s) quedaron sin traducir para no "
-                  f"romper sus hipervínculos/notas (el modelo alteró los tokens).")
+            fallbacks_links = aplicar_traducciones(unidades)
+            if fallbacks_links:
+                print(f"   ⚠️  {fallbacks_links} párrafo(s) quedaron sin traducir para no "
+                      f"romper sus hipervínculos/notas (el modelo alteró los tokens).")
 
         # Traducción de texto en imágenes (opt-in)
         if args.traducir_imagenes:
