@@ -18,8 +18,15 @@ from .utils import contar_palabras_efectivas, ollama_chat_timeout
 
 def traducir_chunk(texto: str, modelo: str,
                    idioma_origen: str = "en", idioma_destino: str = "es",
-                   nombre_origen: str = "English", nombre_destino: str = "Spanish") -> str:
-    """Envía un chunk a Ollama y devuelve la traducción."""
+                   nombre_origen: str = "English", nombre_destino: str = "Spanish",
+                   texto_tabular: bool = False) -> str:
+    """Envía un chunk a Ollama y devuelve la traducción.
+
+    `texto_tabular` es para texto extraído de imágenes: listas de etiquetas,
+    fechas y cifras en vez de prosa. Cambia dos cosas respecto del default:
+    ensancha el techo de tokens de salida y desactiva los guardas de
+    alucinación, que asumen prosa y dan falsos positivos acá (ver más abajo).
+    """
     instruccion_links = ""
     if "\u27e6" in texto:
         instruccion_links = (
@@ -43,7 +50,15 @@ def traducir_chunk(texto: str, modelo: str,
     # Usamos contar_palabras_efectivas() para que el cálculo funcione también con
     # idiomas sin espacios (chino, japonés, coreano) donde len(texto.split()) ≈ 1.
     palabras_entrada = contar_palabras_efectivas(texto)
-    max_tokens = max(64, min(int(palabras_entrada * 2.6), 2048))
+    if texto_tabular:
+        # Medido sobre los gráficos de un documento real: traducir una lista de
+        # ejes y fechas ("Oct-19" → "Octubre/2019") consume hasta ~7 tokens por
+        # palabra de entrada, contra ~1.5 de la prosa. Con el factor de prosa los
+        # captions se cortaban a mitad de lista.
+        factor, piso = 10.0, 256
+    else:
+        factor, piso = 2.6, 64
+    max_tokens = max(piso, min(int(palabras_entrada * factor), 2048))
 
     response = ollama_chat_timeout(
         model=modelo,
@@ -59,9 +74,13 @@ def traducir_chunk(texto: str, modelo: str,
         "", resultado
     ).strip()
 
-    # Detectar alucinación repetitiva
+    # Detectar alucinación repetitiva.
+    # No aplica a texto tabular: una tabla de importes traduce legítimamente a
+    # "mil millones de dólares" en cada fila y dispara el umbral de bigramas.
+    # image_handler usa _es_repeticion_loop() en su lugar, que mide líneas
+    # repetidas enteras — el modo de falla real en imágenes.
     palabras = resultado.split()
-    if len(palabras) > 40:
+    if not texto_tabular and len(palabras) > 40:
         for n in (2, 3):
             ngramas = [" ".join(palabras[i:i+n]) for i in range(len(palabras) - n + 1)]
             conteos = Counter(ngramas)
@@ -222,6 +241,8 @@ def traducir_chunks(chunks: list[str], modelo: str, pausa: float,
 
 
 def traducir_imagenes(imagenes: list, modelo: str,
+                      idioma_origen: str = "en",
+                      idioma_destino: str = "es",
                       nombre_origen: str = "English",
                       nombre_destino: str = "Spanish") -> tuple[int, int, int]:
     """Traduce in-place el texto embebido en una lista de imágenes.
@@ -248,6 +269,7 @@ def traducir_imagenes(imagenes: list, modelo: str,
                 try:
                     resultado = traducir_imagen(
                         img.imagen_bytes, modelo,
+                        idioma_origen, idioma_destino,
                         nombre_origen, nombre_destino, cache,
                     )
                     img.traduccion = resultado

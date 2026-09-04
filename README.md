@@ -129,4 +129,4 @@ python traductor-de-textos.py informe.docx --modelo translategemma:4b --traducir
 - Los archivos EPUB preservan imagenes, estilos y estructura de capitulos.
 - Para HTML, las imagenes se redimensionan al 75% del ancho de pagina en el DOCX resultante.
 - Al mover o renombrar la carpeta del proyecto, hay que recrear el `venv` (`python3 -m venv venv`).
-- `--traducir-imagenes` agrega ~3-5 segundos por imagen. Usa el mismo modelo de traduccion que el texto. El caption se inserta debajo de cada imagen, ajustado a su ancho y alineacion. Algunas imagenes con texto fino (graficos de linea con etiquetas chicas) pueden no ser detectadas — en ese caso no se agrega caption.
+- `--traducir-imagenes` hace dos llamadas al modelo por imagen (una de vision para transcribir el texto, otra para traducirlo) y agrega ~20 segundos por imagen (12-40 segun cuanto texto tenga). Usa el mismo modelo de traduccion que el texto. El caption se inserta debajo de cada imagen, ajustado a su ancho y alineacion. Algunas imagenes con texto fino (graficos de linea con etiquetas chicas) pueden no ser detectadas — en ese caso no se agrega caption.

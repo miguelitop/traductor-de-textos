@@ -317,6 +317,7 @@ def main():
                 print(f"\n🖼️  Imágenes con posible texto: {len(imagenes_epub)}")
                 con_texto, sin_texto, errs_img = traducir_imagenes(
                     imagenes_epub, args.modelo,
+                    idioma_origen, idioma_destino,
                     nombre_origen, nombre_destino,
                 )
                 print(f"   (con texto: {con_texto}, sin texto: {sin_texto}, errores: {errs_img})")
@@ -398,6 +399,7 @@ def main():
                 print(f"\n🖼️  Imágenes con posible texto: {len(imagenes_html)}")
                 con_texto, sin_texto, errs_img = traducir_imagenes(
                     imagenes_html, args.modelo,
+                    idioma_origen, idioma_destino,
                     nombre_origen, nombre_destino,
                 )
                 aplicados = aplicar_captions_imagenes_html(imagenes_html)
@@ -513,6 +515,7 @@ def main():
                 print(f"\n🖼️  Imágenes con posible texto: {len(imagenes)}")
                 con_texto, sin_texto, errs_img = traducir_imagenes(
                     imagenes, args.modelo,
+                    idioma_origen, idioma_destino,
                     nombre_origen, nombre_destino,
                 )
                 aplicados = aplicar_captions_imagenes(imagenes)

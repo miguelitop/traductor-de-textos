@@ -1,13 +1,17 @@
 """
 Traduce texto embebido en imágenes usando un modelo de visión vía Ollama.
 
-El modelo recibe la imagen y devuelve directamente la traducción al idioma destino
-(o el sentinel [NO_TEXT] si la imagen no contiene texto). Una sola llamada hace
-OCR + traducción.
+Se hace en dos pasos, no en uno:
+  1. Llamada de visión que sólo transcribe el texto visible, sin traducir.
+  2. El texto transcripto pasa por traducir_chunk(), el mismo camino que traduce
+     el cuerpo del documento.
+
+Pedirle a la vez OCR y traducción hacía que el modelo transcribiera sin traducir
+—translategemma es un fine-tune de traducción de texto, su rama de visión no pasó
+por ese fine-tune— y los captions salían en el idioma de origen.
 
 API pública:
   - traducir_imagen(bytes, ...)  → str | None    (None = sin texto / descartable)
-  - formatear_caption(texto)     → str           (envuelve con prefijo identificable)
 """
 from __future__ import annotations
 
@@ -39,10 +43,12 @@ def _es_descartable(imagen_bytes: bytes) -> bool:
     return w < DIM_MIN_IMAGEN or h < DIM_MIN_IMAGEN
 
 
-def _construir_prompt(nombre_origen: str, nombre_destino: str) -> str:
+def _construir_prompt_ocr() -> str:
+    """Prompt de transcripción. La traducción se hace después, en un paso aparte."""
     return (
-        f"Translate all visible text in this image from {nombre_origen} to {nombre_destino}. "
-        "Output ONLY the translation, one line per distinct text element. "
+        "Transcribe every piece of text visible in this image, exactly as written. "
+        "Include titles, labels, axis names, legends, captions and footnotes. "
+        "One line per distinct text element. Do not translate, explain or comment. "
         "If the image contains NO readable text, respond with an empty string."
     )
 
@@ -102,11 +108,13 @@ def _limpiar_resultado(texto: str) -> str:
 
 
 def traducir_imagen(imagen_bytes: bytes, modelo: str,
+                    idioma_origen: str = "en",
+                    idioma_destino: str = "es",
                     nombre_origen: str = "English",
                     nombre_destino: str = "Spanish",
                     cache: dict[str, str | None] | None = None,
                     ) -> str | None:
-    """Traduce el texto embebido en una imagen.
+    """Traduce el texto embebido en una imagen: primero OCR, después traducción.
 
     Devuelve:
       - str con la traducción (sin prefijo) si la imagen tiene texto
@@ -114,6 +122,9 @@ def traducir_imagen(imagen_bytes: bytes, modelo: str,
 
     Si se pasa `cache`, se memoriza el resultado por hash de bytes.
     """
+    # Import diferido: translator importa este módulo, hacerlo arriba sería circular.
+    from .translator import traducir_chunk
+
     if _es_descartable(imagen_bytes):
         return None
 
@@ -121,8 +132,7 @@ def traducir_imagen(imagen_bytes: bytes, modelo: str,
     if cache is not None and h in cache:
         return cache[h]
 
-    prompt = _construir_prompt(nombre_origen, nombre_destino)
-    crudo = _llamar_vision(imagen_bytes, modelo, prompt)
+    crudo = _llamar_vision(imagen_bytes, modelo, _construir_prompt_ocr())
 
     # Resultado vacío → sin texto
     if not crudo.strip():
@@ -136,8 +146,24 @@ def traducir_imagen(imagen_bytes: bytes, modelo: str,
             cache[h] = None
         return None
 
-    resultado = _limpiar_resultado(crudo)
-    if not resultado:
+    # Deduplicamos sobre la transcripción, que es donde el modelo repite
+    # (mismo título una vez por panel del gráfico, por ejemplo).
+    transcripcion = _limpiar_resultado(crudo)
+    if not transcripcion:
+        if cache is not None:
+            cache[h] = None
+        return None
+
+    resultado = traducir_chunk(
+        transcripcion, modelo,
+        idioma_origen, idioma_destino,
+        nombre_origen, nombre_destino,
+        texto_tabular=True,
+    ).strip()
+
+    # traducir_chunk no revisa repeticiones en modo tabular; lo hacemos acá con
+    # el criterio que sí sirve para imágenes (línea entera repetida).
+    if not resultado or _es_repeticion_loop(resultado):
         if cache is not None:
             cache[h] = None
         return None

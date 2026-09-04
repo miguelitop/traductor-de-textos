@@ -5,7 +5,7 @@ import io
 from PIL import Image
 
 from traductor.image_handler import (
-    _construir_prompt,
+    _construir_prompt_ocr,
     _es_descartable,
     _limpiar_resultado,
 )
@@ -71,17 +71,23 @@ def test_limpiar_resultado_vacio():
 
 
 # ---------------------------------------------------------------------------
-# _construir_prompt
+# _construir_prompt_ocr
 # ---------------------------------------------------------------------------
 
-def test_construir_prompt_contiene_idiomas():
-    """El prompt debe contener los nombres de idioma pasados."""
-    prompt = _construir_prompt("English", "Spanish")
-    assert "English" in prompt
-    assert "Spanish" in prompt
+def test_construir_prompt_ocr_pide_transcribir():
+    """El prompt de OCR debe pedir transcripción, no traducción."""
+    prompt = _construir_prompt_ocr()
+    assert "Transcribe" in prompt
+    assert "Do not translate" in prompt
 
 
-def test_construir_prompt_sin_sentinel():
+def test_construir_prompt_ocr_sin_idiomas():
+    """El prompt de OCR es agnóstico del par de idiomas: la traducción va aparte."""
+    prompt = _construir_prompt_ocr()
+    assert "English" not in prompt
+    assert "Spanish" not in prompt
+
+
+def test_construir_prompt_ocr_sin_sentinel():
     """El prompt no debe contener el sentinel [NO_TEXT]."""
-    prompt = _construir_prompt("English", "Spanish")
-    assert "[NO_TEXT]" not in prompt
+    assert "[NO_TEXT]" not in _construir_prompt_ocr()
