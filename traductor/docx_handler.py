@@ -19,7 +19,13 @@ class HyperlinkInfo:
     r_id: str
     anchor: str = ""
     rPr: object = None
-    texto: str = ""  # texto visible original del link (se reinserta tal cual)
+    texto: str = ""             # texto visible original del link
+    texto_traducido: str = ""   # traducción del texto visible (bloque aparte)
+
+    @property
+    def texto_final(self) -> str:
+        """Texto que se reinserta en el documento al reconstruir el párrafo."""
+        return self.texto_traducido or self.texto
 
 
 @dataclass
@@ -133,10 +139,10 @@ def _extraer_texto_con_links(parrafo: Paragraph) -> tuple[str, dict, dict, objec
 
     Cada hipervínculo o nota se reemplaza por un token opaco ⟦N⟧ que el modelo
     solo tiene que arrastrar sin tocar (no traduce nada dentro). El texto visible
-    del link NO se manda al modelo: se guarda en el HyperlinkInfo y se reinserta
-    tal cual el original al reconstruir. Es mucho más robusto que embeber el texto
-    en el marcador, porque los modelos locales rompen los delimitadores cuando
-    tienen que traducir texto adentro.
+    del link no viaja dentro del párrafo: se guarda en el HyperlinkInfo y se
+    traduce en un bloque propio (ver recolectar_links_traducibles). Es mucho más
+    robusto que embeber el texto en el marcador, porque los modelos locales rompen
+    los delimitadores cuando tienen que traducir texto adentro.
 
     El contador es único para links y notas (comparten numeración) para que los
     índices nunca colisionen.
@@ -253,6 +259,30 @@ def _mergear_parrafos_xml(p1: Paragraph, p2: Paragraph) -> None:
         parent.remove(p2._element)
 
 
+def _mergear_referencias(actual: UnidadTraducible, siguiente: UnidadTraducible,
+                         texto_siguiente: str) -> str:
+    """Fusiona los links/notas de `siguiente` dentro de `actual`, renumerando.
+
+    Devuelve el texto del segundo párrafo con sus tokens ⟦N⟧ desplazados por el
+    mayor índice ya usado en el primero. La sustitución es de una sola pasada,
+    así que un desplazamiento nunca pisa a otro token.
+    """
+    if not (siguiente.hyperlinks or siguiente.notas):
+        return texto_siguiente
+
+    usados = set(actual.hyperlinks) | set(actual.notas)
+    offset = max(usados) if usados else 0
+
+    for idx, info in siguiente.hyperlinks.items():
+        actual.hyperlinks[idx + offset] = info
+    for idx, info in siguiente.notas.items():
+        actual.notas[idx + offset] = info
+
+    return _TOKEN_PATTERN.sub(
+        lambda m: _token(int(m.group(1)) + offset), texto_siguiente
+    )
+
+
 def mergear_parrafos(unidades: list[UnidadTraducible]) -> list[UnidadTraducible]:
     """Mergea párrafos consecutivos partidos por soft-breaks (PDF→DOCX Calibre).
 
@@ -274,6 +304,11 @@ def mergear_parrafos(unidades: list[UnidadTraducible]) -> list[UnidadTraducible]
         empieza_minus = t2 and t2[0].islower()
 
         if not termina_cierre and empieza_minus:
+            # Los tokens ⟦N⟧ del segundo párrafo se renumeran para que no
+            # colisionen con los del primero (ambos numeran desde 1), y sus
+            # mapas de links/notas se fusionan. Sin esto el párrafo mergeado
+            # queda con tokens sin entrada y aplicar_traducciones lo descarta.
+            t2 = _mergear_referencias(actual, siguiente, t2)
             actual.texto = t1 + " " + t2
             _mergear_parrafos_xml(actual.parrafo, siguiente.parrafo)
         else:
@@ -447,7 +482,8 @@ def _reconstruir_parrafo(parrafo: Paragraph, texto: str,
 
         idx = int(match.group(1))
 
-        # ¿Es un link? Se reinserta con su texto visible ORIGINAL (no traducido).
+        # ¿Es un link? Se reinserta con su texto visible traducido (o el
+        # original, si su traducción no llegó o se descartó por sospechosa).
         if idx in link_map:
             info = link_map[idx]
             hl_el = OxmlElement("w:hyperlink")
@@ -456,7 +492,7 @@ def _reconstruir_parrafo(parrafo: Paragraph, texto: str,
             if info.anchor:
                 hl_el.set(qn("w:anchor"), info.anchor)
             link_rPr = info.rPr if info.rPr is not None else base_rPr
-            link_run = _crear_run_element(info.texto, link_rPr)
+            link_run = _crear_run_element(info.texto_final, link_rPr)
             _aplicar_estilo_link(link_run)
             hl_el.append(link_run)
             elem.append(hl_el)
@@ -479,6 +515,63 @@ def _tokens_intactos(unidad: UnidadTraducible) -> bool:
     esperados = set(unidad.hyperlinks) | set(unidad.notas)
     encontrados = [int(n) for n in _TOKEN_PATTERN.findall(unidad.traduccion)]
     return sorted(encontrados) == sorted(esperados)
+
+
+# Texto de link que no tiene sentido traducir: URLs, mails, y todo lo que no
+# tenga al menos una letra (numeración de citas, "[12]", "3.2", símbolos).
+_URL_PATTERN = re.compile(r"^(https?://|www\.|\S+@\S+\.\S+$)", re.IGNORECASE)
+
+
+def _link_traducible(texto: str) -> bool:
+    """True si el texto visible de un hipervínculo vale la pena traducirlo."""
+    texto = texto.strip()
+    if not texto:
+        return False
+    if _URL_PATTERN.match(texto):
+        return False
+    # Dominio suelto sin esquema ("ejemplo.com/algo")
+    if " " not in texto and re.search(r"\.[a-z]{2,}(/|$)", texto, re.IGNORECASE):
+        return False
+    return any(c.isalpha() for c in texto)
+
+
+def recolectar_links_traducibles(unidades: list[UnidadTraducible]) -> list[HyperlinkInfo]:
+    """Devuelve los hipervínculos cuyo texto visible se manda a traducir.
+
+    Se traducen como bloques propios en vez de dentro del párrafo: así el modelo
+    nunca tiene que mover un token ⟦N⟧ con texto adentro, que es lo que rompía
+    los delimitadores en los modelos locales.
+    """
+    links = []
+    for unidad in unidades:
+        for info in unidad.hyperlinks.values():
+            if _link_traducible(info.texto):
+                links.append(info)
+    return links
+
+
+def asignar_traducciones_links(links: list[HyperlinkInfo],
+                               traducciones: list[str]) -> int:
+    """Asigna a cada link su traducción, descartando las sospechosas.
+
+    El texto de un link es corto y sin contexto: es donde el modelo más tiende a
+    contestar con explicaciones o listas. Cuando la salida no parece un texto de
+    link (vacía, multilínea, desproporcionadamente larga o con el marcador de
+    error de traducir_chunks) se deja el original.
+
+    Devuelve la cantidad de traducciones descartadas.
+    """
+    descartadas = 0
+    for info, traduccion in zip(links, traducciones):
+        candidata = (traduccion or "").strip()
+        if (not candidata
+                or "\n" in candidata
+                or "[ERROR DE TRADUCCIÓN" in candidata
+                or len(candidata) > max(40, len(info.texto) * 3)):
+            descartadas += 1
+            continue
+        info.texto_traducido = candidata
+    return descartadas
 
 
 def aplicar_traducciones(unidades: list[UnidadTraducible]) -> int:

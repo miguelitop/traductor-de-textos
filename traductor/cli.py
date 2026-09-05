@@ -34,6 +34,7 @@ from .config import (MODELO_DEFAULT, MODELO_VISION_DEFAULT, PAUSA_ENTRE_CHUNKS,
 from .converter import convertir_a_docx, convertir_con_calibre
 from .utils import normalizar_path_entrada
 from .docx_handler import (extraer_unidades, mergear_parrafos, desagrupar_formatos,
+                           recolectar_links_traducibles, asignar_traducciones_links,
                            aplicar_traducciones, aplicar_fuente, guardar_docx,
                            extraer_imagenes, aplicar_captions_imagenes)
 from .epub_handler import (abrir_epub, extraer_capitulos, aplicar_traducciones_epub, guardar_epub,
@@ -491,23 +492,33 @@ def main():
             sys.exit(1)
 
         textos = [u.texto for u in unidades]
-        total_palabras = sum(contar_palabras_efectivas(t) for t in textos)
 
         if args.limite and args.limite < len(textos):
             textos = textos[:args.limite]
             unidades = unidades[:args.limite]
             print(f"   ⚠️  Limitado a los primeros {args.limite} bloques (--limite)")
 
+        # El texto visible de los hipervínculos viaja como bloque aparte: dentro
+        # del párrafo es solo un token ⟦N⟧, así el modelo nunca tiene que mover
+        # un marcador con texto adentro.
+        links = recolectar_links_traducibles(unidades)
+        textos_links = [l.texto for l in links]
+
+        bloques = textos + textos_links
+        total_palabras = sum(contar_palabras_efectivas(t) for t in bloques)
+
         errores, sospechosos = [], []
-        if not textos:
+        if not bloques:
             print("   Sin texto traducible: se procesan solo las imágenes.")
         else:
-            print(f"   {total_palabras:,} palabras, {len(textos)} bloques de texto")
-            tiempo_estimado = len(textos) * 10
+            print(f"   {total_palabras:,} palabras, {len(bloques)} bloques de texto")
+            if textos_links:
+                print(f"   ↳ {len(textos_links)} de ellos son textos de hipervínculo")
+            tiempo_estimado = len(bloques) * 10
             mins = tiempo_estimado // 60
             print(f"   Tiempo estimado: ~{mins} minutos\n")
 
-            traducciones, errores, sospechosos = traducir_chunks(textos, args.modelo, PAUSA_ENTRE_CHUNKS,
+            traducciones, errores, sospechosos = traducir_chunks(bloques, args.modelo, PAUSA_ENTRE_CHUNKS,
                                                         idioma_origen, idioma_destino,
                                                         nombre_origen, nombre_destino,
                                                         ruta_cache=ruta_cache)
@@ -517,6 +528,11 @@ def main():
                     unidad.traduccion = traducciones[i]
                 else:
                     unidad.traduccion = unidad.texto
+
+            descartadas = asignar_traducciones_links(links, traducciones[len(textos):])
+            if descartadas:
+                print(f"   ⚠️  {descartadas} texto(s) de hipervínculo quedaron en el "
+                      f"idioma original (la traducción no parecía un texto de link).")
 
             fallbacks_links = aplicar_traducciones(unidades)
             if fallbacks_links:
@@ -546,7 +562,7 @@ def main():
         print(f"\n✅ Traducción completada.")
         print(f"   Guardado en: {ruta_salida}")
         print(f"   Unidades traducidas: {len(unidades)}")
-        print(f"   Bloques procesados: {len(textos) - len(errores)}/{len(textos)}")
+        print(f"   Bloques procesados: {len(bloques) - len(errores)}/{len(bloques)}")
         if errores:
             print(f"   ⚠️  Bloques con error (revisar manualmente): {errores}")
         ruta_reporte = guardar_reporte_sospechosos(ruta_salida, sospechosos)
