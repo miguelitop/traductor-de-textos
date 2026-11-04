@@ -2,7 +2,6 @@ import re
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
-from xml.etree.ElementTree import tostring
 
 from docx import Document
 from docx.oxml import OxmlElement
@@ -319,10 +318,44 @@ def mergear_parrafos(unidades: list[UnidadTraducible]) -> list[UnidadTraducible]
     return resultado
 
 
+# Propiedades de run que se ven en el documento. El resto (w:lang, w:rFonts
+# eastAsia/hint, w:noProof, w:kern, w:szCs, w:bCs, w:spacing, w14:*...) varía
+# entre runs de DOCX exportados/convertidos sin cambiar nada visible, y si se
+# compara partiría párrafos uniformes en fragmentos de pocas palabras.
+_PROPS_VISIBLES = (
+    "rStyle", "b", "i", "u", "strike", "dstrike", "color", "highlight", "shd",
+    "sz", "vertAlign", "caps", "smallCaps",
+)
+_RFONTS_VISIBLES = ("ascii", "hAnsi")
+
+# Un párrafo se desagrupa como mucho con un grupo de menos palabras que esto
+# (el caso típico: una etiqueta en negrita "Nota:" seguida de texto normal).
+_MIN_PALABRAS_GRUPO = 3
+
+
 def _formato_signature(run) -> str:
-    """Devuelve el XML del w:rPr del run como string para comparar formato."""
+    """Firma del formato visible del run, para decidir si dos runs se agrupan."""
     rPr = run._element.find(qn("w:rPr"))
-    return tostring(rPr, encoding="unicode") if rPr is not None else ""
+    if rPr is None:
+        return ""
+    partes = []
+    for tag in _PROPS_VISIBLES:
+        el = rPr.find(qn(f"w:{tag}"))
+        if el is not None:
+            attrs = sorted((k.split("}")[-1], v) for k, v in el.attrib.items())
+            partes.append(f"{tag}{attrs}")
+    rfonts = rPr.find(qn("w:rFonts"))
+    if rfonts is not None:
+        fuentes = [(a, rfonts.get(qn(f"w:{a}"))) for a in _RFONTS_VISIBLES]
+        fuentes = [f for f in fuentes if f[1]]
+        if fuentes:
+            partes.append(f"rFonts{fuentes}")
+    return "|".join(partes)
+
+
+def _corta_palabra(izq: str, der: str) -> bool:
+    """True si entre el texto izq y der no hay separación (ej. 'c' + 'oncerning')."""
+    return bool(izq) and bool(der) and izq[-1].isalnum() and der[0].isalnum()
 
 
 def desagrupar_formatos(unidades: list[UnidadTraducible]) -> list[UnidadTraducible]:
@@ -343,12 +376,16 @@ def desagrupar_formatos(unidades: list[UnidadTraducible]) -> list[UnidadTraducib
             resultado.append(unidad)
             continue
 
-        # Agrupar runs consecutivos comparando el XML de w:rPr
+        # Agrupar runs consecutivos con el mismo formato visible. Los runs de
+        # solo whitespace no cortan un grupo: se suman al grupo en curso para
+        # que su espacio no se pierda al unir el texto.
         grupos = []  # [(signature, [run_indices])]
         for i, run in enumerate(runs):
-            texto_run = (run.text or "").strip()
-            if not texto_run:
-                continue  # runs de solo whitespace se ignoran
+            texto_run = run.text or ""
+            if not texto_run.strip():
+                if grupos:
+                    grupos[-1][1].append(i)
+                continue
             sig = _formato_signature(run)
             if grupos and grupos[-1][0] == sig:
                 grupos[-1][1].append(i)
@@ -359,9 +396,20 @@ def desagrupar_formatos(unidades: list[UnidadTraducible]) -> list[UnidadTraducib
             resultado.append(unidad)
             continue
 
+        textos = ["".join(runs[i].text or "" for i in indices) for _s, indices in grupos]
+
+        # No partir si el corte cae a mitad de palabra o si quedarían varios
+        # fragmentos chicos: el modelo traduce mal pedazos sin contexto. Perder
+        # una negrita es preferible a una traducción rota.
+        corta = any(_corta_palabra(a, b) for a, b in zip(textos, textos[1:]))
+        chicos = sum(1 for t in textos if len(t.split()) < _MIN_PALABRAS_GRUPO)
+        if corta or chicos > 1:
+            resultado.append(unidad)
+            continue
+
         # Crear una unidad por grupo de runs con mismo formato
-        for _sig, indices in grupos:
-            texto = " ".join((runs[i].text or "").strip() for i in indices).strip()
+        for (_sig, indices), texto in zip(grupos, textos):
+            texto = texto.strip()
             if not texto:
                 continue
             resultado.append(UnidadTraducible(
@@ -611,7 +659,14 @@ def aplicar_traducciones(unidades: list[UnidadTraducible]) -> int:
                 continue
 
             if unidad.run_indices is not None:
-                # Esta unidad solo modifica los runs que le pertenecen
+                # Esta unidad solo modifica los runs que le pertenecen.
+                # Se conserva el espacio de los bordes del grupo original para
+                # que la traducción no quede pegada al grupo vecino.
+                original = "".join(runs[idx].text or "" for idx in unidad.run_indices)
+                if original.strip():
+                    inicio = original[:len(original) - len(original.lstrip())]
+                    fin = original[len(original.rstrip()):]
+                    texto = inicio + texto + fin
                 for i, idx in enumerate(unidad.run_indices):
                     if i == 0:
                         runs[idx].text = texto

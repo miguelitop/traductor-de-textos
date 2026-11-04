@@ -5,7 +5,9 @@ from docx import Document
 from traductor.docx_handler import (
     _tokens_intactos,
     _link_traducible,
+    aplicar_traducciones,
     asignar_traducciones_links,
+    desagrupar_formatos,
     mergear_parrafos,
     recolectar_links_traducibles,
     UnidadTraducible,
@@ -152,3 +154,75 @@ def test_mergear_parrafos_renumera_tokens_y_fusiona_mapas():
 
     unido.traduccion = unido.texto
     assert _tokens_intactos(unido) is True
+
+
+# --- desagrupar_formatos ---------------------------------------------------
+
+def _parrafo_con_runs(runs_spec):
+    """Crea un párrafo con runs [(texto, negrita, idioma_o_None, hint_o_None)]."""
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    doc = Document()
+    p = doc.add_paragraph()
+    for texto, negrita, lang, hint in runs_spec:
+        run = p.add_run(texto)
+        run.bold = negrita or None
+        rPr = run._element.get_or_add_rPr()
+        if lang:
+            el = OxmlElement("w:lang")
+            el.set(qn("w:val"), lang)
+            rPr.append(el)
+        if hint:
+            el = OxmlElement("w:rFonts")
+            el.set(qn("w:hint"), hint)
+            rPr.insert(0, el)
+    return p
+
+
+def _unidad(p):
+    return UnidadTraducible(texto=p.text, parrafo=p)
+
+
+def test_desagrupar_ignora_atributos_invisibles():
+    """Runs que difieren solo en w:lang / rFonts hint quedan en una sola unidad."""
+    p = _parrafo_con_runs([
+        ("Explanation of the ", True, None, None),
+        ("Resolution of the Central Committee ", True, "zh-CN", "eastAsia"),
+        ("concerning Persevering", True, "en-US", None),
+    ])
+    assert len(desagrupar_formatos([_unidad(p)])) == 1
+
+
+def test_desagrupar_no_corta_a_mitad_de_palabra():
+    """Si el cambio de formato cae a mitad de palabra no se desagrupa."""
+    p = _parrafo_con_runs([
+        ("on Certain Major Issues c", True, None, None),
+        ("oncerning the matter at hand", False, None, None),
+    ])
+    assert len(desagrupar_formatos([_unidad(p)])) == 1
+
+
+def test_desagrupar_no_fragmenta_en_pedazos_chicos():
+    """Varios grupos de pocas palabras: se traduce el párrafo entero."""
+    p = _parrafo_con_runs([
+        ("Communist ", False, None, None),
+        ("Party ", True, None, None),
+        ("of China on certain issues", False, None, None),
+    ])
+    assert len(desagrupar_formatos([_unidad(p)])) == 1
+
+
+def test_desagrupar_etiqueta_en_negrita_y_espacios():
+    """Etiqueta en negrita + texto normal: se separa y se conserva el espacio."""
+    p = _parrafo_con_runs([
+        ("Note: ", True, None, None),
+        ("this is the body of the paragraph", False, None, None),
+    ])
+    unidades = desagrupar_formatos([_unidad(p)])
+    assert [u.texto for u in unidades] == ["Note:", "this is the body of the paragraph"]
+    unidades[0].traduccion = "Nota:"
+    unidades[1].traduccion = "este es el cuerpo del párrafo"
+    aplicar_traducciones(unidades)
+    assert p.text == "Nota: este es el cuerpo del párrafo"
+    assert p.runs[0].bold is True
