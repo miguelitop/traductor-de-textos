@@ -71,6 +71,9 @@ def _construir_prompt_ocr() -> str:
 
 PROMPT_USUARIO_OCR = "Transcribe the text in this image."
 
+# Una imagen que traba al modelo de visión no debe frenar todo el documento.
+TIMEOUT_VISION_SECS = 120
+
 
 def _llamar_vision(imagen_bytes: bytes, modelo: str, prompt: str) -> str:
     """Una llamada a Ollama-vision. Devuelve el texto crudo del modelo."""
@@ -82,6 +85,7 @@ def _llamar_vision(imagen_bytes: bytes, modelo: str, prompt: str) -> str:
              "images": [imagen_bytes]},
         ],
         options={"temperature": 0.1, "num_predict": 1024},
+        timeout_secs=TIMEOUT_VISION_SECS,
     )
     return response["message"]["content"].strip()
 

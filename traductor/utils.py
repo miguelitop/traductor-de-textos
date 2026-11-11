@@ -4,7 +4,6 @@ Windows ↔ WSL, y helpers para ejecutables entre sistemas.
 """
 from __future__ import annotations
 
-import concurrent.futures
 import platform
 import re
 import subprocess
@@ -121,20 +120,16 @@ def mergear_fragmentos(textos: list[str]) -> list[str]:
     return resultado
 
 
-def ollama_chat_timeout(*args, timeout_secs=180, fallback_timeout=300, **kwargs):
+def ollama_chat_timeout(*args, timeout_secs=180, **kwargs):
     """Wrapper para ollama.chat con timeout.
 
-    Intenta timeout nativo de la librería; si falla (TypeError),
-    usa concurrent.futures.ThreadPoolExecutor como fallback.
+    El timeout lo aplica httpx dentro de ollama.Client: la petición se aborta
+    de verdad. (ollama.chat no acepta timeout, y esperar en un hilo aparte
+    colgaba igual: al salir del executor se esperaba a que el hilo terminara.)
     Convierte excepciones de timeout en Exception para reintentos.
     """
     try:
-        try:
-            return ollama.chat(*args, timeout=timeout_secs, **kwargs)
-        except TypeError:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(lambda: ollama.chat(*args, **kwargs))
-                return future.result(timeout=fallback_timeout)
+        return ollama.Client(timeout=timeout_secs).chat(*args, **kwargs)
     except Exception as exc:
         if "Timeout" in type(exc).__name__:
             raise Exception(
